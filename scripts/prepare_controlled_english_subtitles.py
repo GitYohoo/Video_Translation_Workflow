@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import json
+from pathlib import Path
+import re
+
+
+TIME_PATTERN = re.compile(
+    r"(?P<start>\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*"
+    r"(?P<end>\d{2}:\d{2}:\d{2}[,.]\d{3})"
+)
+SPEAKER_PATTERN = re.compile(r"^\[(?P<speaker>[^\]]+)\]\s*(?P<text>.*)$", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class Cue:
+    number: int
+    start: str
+    end: str
+    text: str
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="以最终中文字幕为唯一时间轴，生成受控英文字幕并完成预检。")
+    parser.add_argument("--canonical-srt", required=True, help="作为权威时间轴与角色来源的最终中文字幕 SRT")
+    parser.add_argument("--translated-srt", required=True, help="人工或模型编辑的英文字幕 SRT，仅读取英文正文")
+    parser.add_argument("--output-srt", required=True, help="供配音和成片使用的受控英文字幕 SRT")
+    parser.add_argument("--report-json", required=True, help="预检结果 JSON")
+    return parser.parse_args()
+
+
+def parse_time(value: str) -> int:
+    hours, minutes, remainder = value.replace(".", ",").split(":")
+    seconds, milliseconds = remainder.split(",")
+    return (
+        int(hours) * 3_600_000
+        + int(minutes) * 60_000
+        + int(seconds) * 1000
+        + int(milliseconds)
+    )
+
+
+def load_srt(path: Path) -> list[Cue]:
+    blocks = re.split(r"\r?\n\s*\r?\n", path.read_text(encoding="utf-8-sig").strip())
+    cues: list[Cue] = []
+    for position, block in enumerate(blocks, start=1):
+        lines = block.splitlines()
+        if len(lines) < 3:
+            raise ValueError(f"SRT 第 {position} 个段落格式错误。")
+        try:
+            number = int(lines[0].strip())
+        except ValueError as error:
+            raise ValueError(f"SRT 第 {position} 个段落序号无效：{lines[0]}") from error
+        match = TIME_PATTERN.search(lines[1])
+        if not match:
+            raise ValueError(f"SRT 第 {number} 段时间格式无效：{lines[1]}")
+        start = match.group("start").replace(".", ",")
+        end = match.group("end").replace(".", ",")
+        if parse_time(end) <= parse_time(start):
+            raise ValueError(f"SRT 第 {number} 段结束时间必须晚于开始时间。")
+        text = "\n".join(lines[2:]).strip()
+        if not text:
+            raise ValueError(f"SRT 第 {number} 段没有字幕正文。")
+        cues.append(Cue(number, start, end, text))
+    if not cues:
+        raise ValueError(f"SRT 没有字幕条目：{path}")
+    return cues
+
+
+def speaker_and_text(text: str) -> tuple[str | None, str]:
+    match = SPEAKER_PATTERN.match(text.strip())
+    if not match:
+        return None, text.strip()
+    return match.group("speaker").strip(), match.group("text").strip()
+
+
+def validate_canonical(cues: list[Cue]) -> None:
+    for index, cue in enumerate(cues, start=1):
+        if cue.number != index:
+            raise ValueError(f"主时间轴序号不连续：期望第 {index} 段，实际为第 {cue.number} 段。")
+    for previous, current in zip(cues, cues[1:]):
+        if parse_time(current.start) < parse_time(previous.end):
+            raise ValueError(f"主时间轴存在重叠：第 {previous.number} 段与第 {current.number} 段。")
+
+
+def build_controlled(canonical: list[Cue], translated: list[Cue]) -> tuple[list[Cue], list[int], list[int]]:
+    if len(canonical) != len(translated):
+        raise ValueError(
+            f"中英文字幕条目数量不一致：主时间轴 {len(canonical)} 条，英文译稿 {len(translated)} 条。"
+        )
+    timing_corrected: list[int] = []
+    role_corrected: list[int] = []
+    controlled: list[Cue] = []
+    for master, draft in zip(canonical, translated):
+        if master.number != draft.number:
+            raise ValueError(f"英文译稿序号不匹配：主时间轴第 {master.number} 段对应了英文第 {draft.number} 段。")
+        master_role, _ = speaker_and_text(master.text)
+        draft_role, english_text = speaker_and_text(draft.text)
+        if not english_text:
+            raise ValueError(f"英文译稿第 {draft.number} 段移除角色标签后没有正文。")
+        if (draft.start, draft.end) != (master.start, master.end):
+            timing_corrected.append(master.number)
+        if draft_role != master_role:
+            role_corrected.append(master.number)
+        controlled_text = f"[{master_role}] {english_text}" if master_role else english_text
+        controlled.append(Cue(master.number, master.start, master.end, controlled_text))
+    return controlled, timing_corrected, role_corrected
+
+
+def output_text(cues: list[Cue]) -> str:
+    return "".join(
+        f"{cue.number}\n{cue.start} --> {cue.end}\n{cue.text}\n\n"
+        for cue in cues
+    )
+
+
+def affected_segments(previous: list[Cue], current: list[Cue]) -> list[dict]:
+    old = {cue.number: cue for cue in previous}
+    changes: list[dict] = []
+    for cue in current:
+        before = old.get(cue.number)
+        reasons: list[str] = []
+        if before is None:
+            reasons.append("新增")
+        else:
+            if before.text != cue.text:
+                reasons.append("英文文本或角色变化")
+            if (before.start, before.end) != (cue.start, cue.end):
+                reasons.append("时间窗变化")
+        if reasons:
+            changes.append({"编号": cue.number, "原因": reasons})
+    return changes
+
+
+def main() -> int:
+    args = parse_args()
+    canonical_path = Path(args.canonical_srt).resolve()
+    translated_path = Path(args.translated_srt).resolve()
+    output_path = Path(args.output_srt).resolve()
+    report_path = Path(args.report_json).resolve()
+    for label, path in (("最终中文字幕", canonical_path), ("英文译稿", translated_path)):
+        if not path.is_file():
+            raise FileNotFoundError(f"找不到{label}：{path}")
+
+    canonical = load_srt(canonical_path)
+    translated = load_srt(translated_path)
+    validate_canonical(canonical)
+    controlled, timing_corrected, role_corrected = build_controlled(canonical, translated)
+    previous = load_srt(output_path) if output_path.is_file() else []
+    changes = affected_segments(previous, controlled)
+    content = output_text(controlled)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not output_path.is_file() or output_path.read_text(encoding="utf-8-sig") != content:
+        output_path.write_text(content, encoding="utf-8-sig", newline="\n")
+    report = {
+        "状态": "通过",
+        "主时间轴": str(canonical_path),
+        "英文译稿": str(translated_path),
+        "受控英文字幕": str(output_path),
+        "条目数量": len(controlled),
+        "纠正时间码数量": len(timing_corrected),
+        "纠正时间码编号": timing_corrected,
+        "纠正角色标签数量": len(role_corrected),
+        "纠正角色标签编号": role_corrected,
+        "受影响片段数量": len(changes),
+        "受影响片段": changes,
+    }
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"英文字幕预检通过：{len(controlled)} 条；受控时间轴：{output_path}", flush=True)
+    print(f"已纠正时间码：{len(timing_corrected)} 条；已统一角色标签：{len(role_corrected)} 条。", flush=True)
+    print(f"相对上次受控字幕需更新片段：{len(changes)} 条；报告：{report_path}", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as error:
+        print(f"处理失败：{error}", flush=True)
+        raise SystemExit(1)

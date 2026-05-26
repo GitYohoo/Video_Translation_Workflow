@@ -37,7 +37,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="输出目录已存在时，替换本脚本生成的片段和清单",
+        help="源音轨变化时，替换本脚本生成的全部片段和清单",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help="字幕变化时保留相同时间窗片段，仅补充新增片段并更新清单",
     )
     return parser.parse_args()
 
@@ -113,7 +118,7 @@ def safe_name(value: str) -> str:
     return safe or "未标注"
 
 
-def prepare_output(output_dir: Path, overwrite: bool) -> Path:
+def prepare_output(output_dir: Path, overwrite: bool, update: bool) -> Path:
     clips_dir = output_dir / "片段"
     generated_paths = [
         clips_dir,
@@ -121,7 +126,7 @@ def prepare_output(output_dir: Path, overwrite: bool) -> Path:
         output_dir / "英文配音分段清单.html",
     ]
     existing_paths = [path for path in generated_paths if path.exists()]
-    if existing_paths and not overwrite:
+    if existing_paths and not overwrite and not update:
         raise FileExistsError(
             f"输出中已有分段文件：{existing_paths[0]}。需要覆盖时请传入 --overwrite。"
         )
@@ -159,6 +164,9 @@ def cut_audio(audio_path: Path, cues: list[Cue], clips_dir: Path) -> tuple[wave.
                 )
             filename = clip_filename(cue)
             output_path = clips_dir / filename
+            if output_path.is_file():
+                filenames.append(filename)
+                continue
             source.setpos(start_frame)
             frames = source.readframes(end_frame - start_frame)
             with wave.open(str(output_path), "wb") as target:
@@ -256,9 +264,11 @@ def main() -> int:
         raise FileNotFoundError(f"找不到英文字幕：{subtitle_path}")
     if not audio_path.is_file():
         raise FileNotFoundError(f"找不到 DX 对白轨：{audio_path}")
+    if args.overwrite and args.update:
+        raise ValueError("--overwrite 与 --update 不能同时使用。")
 
     cues = load_cues(subtitle_path)
-    clips_dir = prepare_output(output_dir, args.overwrite)
+    clips_dir = prepare_output(output_dir, args.overwrite, args.update)
     params, filenames = cut_audio(audio_path, cues, clips_dir)
     write_csv(output_dir / "英文配音分段清单.csv", cues, filenames)
     write_html(

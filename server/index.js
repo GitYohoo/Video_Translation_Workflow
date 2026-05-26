@@ -47,6 +47,11 @@ const finalSubtitlesCoreScript = path.join(
   "merge_final_chinese_subtitles.py",
 );
 const finalSubtitlesPython = punctuationPython;
+const controlledEnglishSubtitlesCoreScript = path.join(
+  workflowRootDirectory,
+  "scripts",
+  "prepare_controlled_english_subtitles.py",
+);
 const splitDubbingCoreScript = path.join(workflowRootDirectory, "scripts", "split_dubbing_segments.py");
 const indexTtsCoreScript = path.join(workflowRootDirectory, "scripts", "indextts2_dubbing_workflow.py");
 const indexTtsAssetsScript = path.join(
@@ -213,6 +218,10 @@ function finalSubtitlesOutputPaths(record) {
       outputDirectory: translationOutputDirectory,
       srtPath: path.join(translationOutputDirectory, `${videoStem}_最终英文字幕.srt`),
     },
+    controlledTarget: {
+      srtPath: path.join(translationOutputDirectory, `${videoStem}_受控英文字幕.srt`),
+      reportPath: path.join(translationOutputDirectory, `${videoStem}_英文字幕预检报告.json`),
+    },
     videoStem,
   };
 }
@@ -229,7 +238,9 @@ function englishDubbingOutputPaths(record) {
   const assemblyDirectory = path.join(dubbingDirectory, "整轨合成");
   return {
     inputs: {
-      englishSrt: finalPaths.translationTarget.srtPath,
+      chineseTimelineSrt: finalPaths.srtPath,
+      englishDraftSrt: finalPaths.translationTarget.srtPath,
+      englishSrt: finalPaths.controlledTarget.srtPath,
       dialogue: separationPaths.dialoguePath,
       background: separationPaths.backgroundPath,
     },
@@ -244,6 +255,7 @@ function englishDubbingOutputPaths(record) {
     assemblyReportPath: path.join(assemblyDirectory, "英文整轨合成结果.html"),
     assetsStatePath: path.join(dubbingDirectory, "日志", "IndexTTS2_资源状态.json"),
     progressLogPath: path.join(dubbingDirectory, "日志", "IndexTTS2_运行.log"),
+    preflightReportPath: finalPaths.controlledTarget.reportPath,
     videoStem,
   };
 }
@@ -317,6 +329,14 @@ async function isDirectory(directoryPath) {
   }
 }
 
+async function modificationTime(filePath) {
+  try {
+    return (await fs.stat(filePath)).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 function knownProjectPaths(record) {
   const separation = bsRoformerOutputPaths(record);
   const ocr = ocrOutputPaths(record);
@@ -341,6 +361,8 @@ function knownProjectPaths(record) {
     finalSubtitles?.srtPath,
     finalSubtitles?.translationTarget?.outputDirectory,
     finalSubtitles?.translationTarget?.srtPath,
+    finalSubtitles?.controlledTarget?.srtPath,
+    finalSubtitles?.controlledTarget?.reportPath,
     dubbing?.workDirectory,
     dubbing?.segmentManifestPath,
     dubbing?.dubbingManifestPath,
@@ -876,6 +898,11 @@ async function finalSubtitlesStatus(record) {
       outputDirectoryReady: await isDirectory(paths.translationTarget.outputDirectory),
       srtReady: await isFile(paths.translationTarget.srtPath),
     },
+    controlledTarget: {
+      ...paths.controlledTarget,
+      srtReady: await isFile(paths.controlledTarget.srtPath),
+      reportReady: await isFile(paths.controlledTarget.reportPath),
+    },
     startedAt: task?.startedAt || null,
     finishedAt: task?.finishedAt || null,
     logPath: task?.logPath || null,
@@ -978,29 +1005,60 @@ async function englishDubbingStatus(record) {
     ]),
   );
   const inputs = Object.fromEntries(inputEntries);
-  const canRun = inputs.englishSrt.ready && inputs.dialogue.ready && inputs.background.ready;
+  const canRun =
+    inputs.chineseTimelineSrt.ready &&
+    inputs.englishDraftSrt.ready &&
+    inputs.dialogue.ready &&
+    inputs.background.ready;
+  const preflightReportReady = await isFile(paths.preflightReportPath);
   const segmentManifestReady = await isFile(paths.segmentManifestPath);
   const dubbingManifestReady = await isFile(paths.dubbingManifestPath);
   const dubbingReportReady = await isFile(paths.dubbingReportPath);
   const dialogueTrackReady = await isFile(paths.dialogueTrackPath);
   const mixedTrackReady = await isFile(paths.mixedTrackPath);
   const assemblyReportReady = await isFile(paths.assemblyReportPath);
+  const [canonicalTime, draftTime, controlledTime, preflightTime, dialogueTime, backgroundTime, mixedTime] =
+    await Promise.all([
+      modificationTime(paths.inputs.chineseTimelineSrt),
+      modificationTime(paths.inputs.englishDraftSrt),
+      modificationTime(paths.inputs.englishSrt),
+      modificationTime(paths.preflightReportPath),
+      modificationTime(paths.inputs.dialogue),
+      modificationTime(paths.inputs.background),
+      modificationTime(paths.mixedTrackPath),
+    ]);
+  const preflightOutdated =
+    controlledTime === null ||
+    preflightTime === null ||
+    [canonicalTime, draftTime].some(
+      (inputTime) => inputTime !== null && inputTime > preflightTime,
+    );
+  const mixOutdated =
+    preflightOutdated ||
+    mixedTime === null ||
+    [controlledTime, dialogueTime, backgroundTime].some(
+      (inputTime) => inputTime !== null && inputTime > mixedTime,
+    );
   let status = canRun ? "ready" : "blocked";
   if (task?.status === "running") {
     status = "running";
   } else if (task?.status === "failed") {
     status = "failed";
-  } else if (mixedTrackReady && dialogueTrackReady) {
+  } else if (mixedTrackReady && dialogueTrackReady && !mixOutdated) {
     status = "completed";
   }
   return {
     status,
     canRun,
+    preflightOutdated,
+    mixOutdated,
     stage: task?.stage || null,
     inputs,
     workDirectory: paths.workDirectory,
     workDirectoryReady: await isDirectory(paths.workDirectory),
     outputs: {
+      controlledEnglishSrt: { path: paths.inputs.englishSrt, ready: inputs.englishSrt.ready },
+      preflightReport: { path: paths.preflightReportPath, ready: preflightReportReady },
       segmentManifest: { path: paths.segmentManifestPath, ready: segmentManifestReady },
       dubbingManifest: { path: paths.dubbingManifestPath, ready: dubbingManifestReady },
       dubbingReport: { path: paths.dubbingReportPath, ready: dubbingReportReady },
@@ -1021,7 +1079,12 @@ async function startEnglishDubbing(record) {
     throw new Error("该项目没有原视频路径，无法执行英文配音混音。");
   }
   const missingRequiredInputs = [];
-  for (const inputPath of [paths.inputs.englishSrt, paths.inputs.dialogue, paths.inputs.background]) {
+  for (const inputPath of [
+    paths.inputs.chineseTimelineSrt,
+    paths.inputs.englishDraftSrt,
+    paths.inputs.dialogue,
+    paths.inputs.background,
+  ]) {
     if (!(await isFile(inputPath))) {
       missingRequiredInputs.push(inputPath);
     }
@@ -1033,10 +1096,12 @@ async function startEnglishDubbing(record) {
     return englishDubbingStatus(record);
   }
   for (const [label, filePath] of [
+    ["英文字幕预检脚本", controlledEnglishSubtitlesCoreScript],
     ["分段切割脚本", splitDubbingCoreScript],
     ["IndexTTS2 配音脚本", indexTtsCoreScript],
     ["IndexTTS2 资源缓存脚本", indexTtsAssetsScript],
     ["整轨混音脚本", assembleEnglishTrackScript],
+    ["字幕处理 Python 环境", punctuationPython],
     ["IndexTTS2 Python 环境", indexTtsPython],
     ["IndexTTS2 模型配置", path.join(indexTtsModelDirectory, "config.yaml")],
     ["IndexTTS2 官方代码", path.join(indexTtsCodeDirectory, "indextts", "infer_v2.py")],
@@ -1053,7 +1118,7 @@ async function startEnglishDubbing(record) {
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
   const task = {
     status: "running",
-    stage: "segments",
+    stage: "preflight",
     startedAt: new Date().toISOString(),
     finishedAt: null,
     logPath,
@@ -1109,12 +1174,34 @@ async function startEnglishDubbing(record) {
 
   void (async () => {
     try {
+      output.write("步骤 1/4：同步主时间轴并预检英文字幕译稿。\n");
+      await runProcess(
+        punctuationPython,
+        [
+          controlledEnglishSubtitlesCoreScript,
+          "--canonical-srt",
+          paths.inputs.chineseTimelineSrt,
+          "--translated-srt",
+          paths.inputs.englishDraftSrt,
+          "--output-srt",
+          paths.inputs.englishSrt,
+          "--report-json",
+          paths.preflightReportPath,
+        ],
+        commonEnvironment,
+      );
       const subtitleStats = await fs.stat(paths.inputs.englishSrt);
+      const dialogueStats = await fs.stat(paths.inputs.dialogue);
       const segmentManifestStats = await fs.stat(paths.segmentManifestPath).catch(() => null);
-      const regenerateDubbing =
-        !segmentManifestStats || subtitleStats.mtimeMs > segmentManifestStats.mtimeMs;
-      output.write("步骤 1/3：按英文 SRT 切割 DX 对白轨。\n");
-      if (regenerateDubbing) {
+      const dialogueChanged =
+        segmentManifestStats && dialogueStats.mtimeMs > segmentManifestStats.mtimeMs;
+      const regenerateSegments =
+        !segmentManifestStats ||
+        subtitleStats.mtimeMs > segmentManifestStats.mtimeMs ||
+        dialogueChanged;
+      task.stage = "segments";
+      output.write("\n步骤 2/4：按受控英文 SRT 切割 DX 对白轨。\n");
+      if (regenerateSegments) {
         const segmentArguments = [
           splitDubbingCoreScript,
           "--subtitle",
@@ -1124,8 +1211,10 @@ async function startEnglishDubbing(record) {
           "--output-dir",
           paths.workDirectory,
         ];
-        if (segmentManifestStats) {
+        if (dialogueChanged) {
           segmentArguments.push("--overwrite");
+        } else if (segmentManifestStats) {
+          segmentArguments.push("--update");
         }
         await runProcess(punctuationPython, segmentArguments, commonEnvironment);
       } else {
@@ -1133,7 +1222,7 @@ async function startEnglishDubbing(record) {
       }
 
       task.stage = "assets";
-      output.write("\n步骤 2/3：确认 IndexTTS2 运行资源并生成英文配音。\n");
+      output.write("\n步骤 3/4：确认 IndexTTS2 运行资源并生成英文配音。\n");
       await fs.mkdir(path.dirname(paths.assetsStatePath), { recursive: true });
       try {
         await runProcess(
@@ -1186,9 +1275,7 @@ async function startEnglishDubbing(record) {
         "--emotion-alpha",
         "0.6",
       ];
-      if (regenerateDubbing) {
-        dubbingArguments.push("--overwrite");
-      }
+      output.write("IndexTTS2 将复用未变更片段，仅生成或重新适配受影响片段。\n");
       await runProcess(
         indexTtsPython,
         dubbingArguments,
@@ -1200,7 +1287,7 @@ async function startEnglishDubbing(record) {
       );
 
       task.stage = "mixing";
-      output.write("\n步骤 3/3：铺设英文对白整轨并与 MX+FX 背景底轨混音。\n");
+      output.write("\n步骤 4/4：铺设英文对白整轨并与 MX+FX 背景底轨混音。\n");
       await runProcess(
         punctuationPython,
         [
@@ -1293,11 +1380,24 @@ async function finalVideoStatus(record) {
     ]),
   );
   const inputs = Object.fromEntries(inputEntries);
-  const canPreview = inputs.video.ready && inputs.subtitle.ready;
-  const canRun = canPreview && inputs.audio.ready;
+  const dubbingStatus = await englishDubbingStatus(record);
+  const canPreview =
+    inputs.video.ready && inputs.subtitle.ready && !dubbingStatus.preflightOutdated;
+  const canRun = canPreview && inputs.audio.ready && dubbingStatus.status === "completed";
   const styledAssReady = await isFile(paths.styledAssPath);
   const videoReady = await isFile(paths.videoPath);
   const reportReady = await isFile(paths.reportPath);
+  const [videoInputTime, audioTime, subtitleTime, outputVideoTime] = await Promise.all([
+    modificationTime(paths.inputs.video),
+    modificationTime(paths.inputs.audio),
+    modificationTime(paths.inputs.subtitle),
+    modificationTime(paths.videoPath),
+  ]);
+  const videoOutdated =
+    outputVideoTime === null ||
+    [videoInputTime, audioTime, subtitleTime].some(
+      (inputTime) => inputTime !== null && inputTime > outputVideoTime,
+    );
   const previews = await Promise.all(
     paths.previewPaths.map(async (previewPath, index) => ({
       path: previewPath,
@@ -1310,13 +1410,14 @@ async function finalVideoStatus(record) {
     status = "running";
   } else if (task?.status === "failed") {
     status = "failed";
-  } else if (videoReady && reportReady) {
+  } else if (videoReady && reportReady && canRun && !videoOutdated) {
     status = "completed";
   }
   return {
     status,
     canRun,
     canPreview,
+    videoOutdated,
     inputs,
     style: finalVideoStyles.get(record.id) || finalVideoStyle(),
     outputDirectory: paths.outputDirectory,
@@ -1339,6 +1440,9 @@ async function generateFinalVideoPreview(record, requestedStyle) {
   const paths = finalVideoOutputPaths(record);
   if (!paths) {
     throw new Error("该项目没有原视频路径，无法生成字幕参考帧。");
+  }
+  if ((await englishDubbingStatus(record)).preflightOutdated) {
+    throw new Error("英文译稿或主时间轴已变化，请先执行英文配音步骤中的字幕预检。");
   }
   if (!(await isFile(paths.inputs.subtitle))) {
     throw new Error("未找到最终英文字幕 SRT，无法生成字幕参考帧。");
@@ -1386,6 +1490,10 @@ async function startFinalVideo(record, requestedStyle) {
   const paths = finalVideoOutputPaths(record);
   if (!paths) {
     throw new Error("该项目没有原视频路径，无法生成最终成片。");
+  }
+  const dubbingStatus = await englishDubbingStatus(record);
+  if (dubbingStatus.status !== "completed") {
+    throw new Error("英文译稿、主时间轴或音轨已变化，请先重新执行英文配音与混音。");
   }
   const missingInputs = [];
   for (const inputPath of Object.values(paths.inputs)) {

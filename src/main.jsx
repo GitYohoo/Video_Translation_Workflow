@@ -869,8 +869,8 @@ function VideoPage({ videos, isLoading }) {
         </div>
         <div className="workflow-card manual-step">
           <p className="eyebrow">步骤 05</p>
-          <h2>人工翻译英文字幕</h2>
-          <p>改完角色名后，将下列文字复制给 Gemini 进行字幕翻译。</p>
+          <h2>编辑英文字幕译稿</h2>
+          <p>改完角色名后，将下列文字复制给 Gemini 进行字幕翻译。译稿只提供英文正文，后续时间轴始终以最终中文字幕为准。</p>
           <div className={`step-status ${canTranslate ? "ready" : "blocked"}`}>
             <strong>{canTranslate ? "可以开始人工翻译" : "等待最终中文字幕"}</strong>
             <small>
@@ -889,7 +889,7 @@ function VideoPage({ videos, isLoading }) {
               />
               <div className="track-results">
                 <FileResult
-                  label="最终英文字幕 SRT"
+                  label="英文字幕译稿 SRT"
                   file={{
                     path: finalSubtitles.translationTarget.srtPath,
                     ready: finalSubtitles.translationTarget.srtReady,
@@ -921,9 +921,12 @@ function VideoPage({ videos, isLoading }) {
         <div className="workflow-card manual-step">
           <p className="eyebrow">步骤 06</p>
           <h2>IndexTTS2 英文配音与混音</h2>
-          <p>按最终英文 SRT 切割 DX 对白轨，生成英文配音整轨，并与 MX+FX 背景底轨混音。</p>
+          <p>先将英文译稿同步到主时间轴并预检，再仅更新受影响配音片段，最后与 MX+FX 背景底轨混音。</p>
           <div className={`step-status ${englishDubbing?.status || "blocked"}`}>
             <strong>
+              {englishDubbing?.status === "running" &&
+                englishDubbing.stage === "preflight" &&
+                "正在预检英文字幕"}
               {englishDubbing?.status === "running" &&
                 englishDubbing.stage === "segments" &&
                 "正在切割 DX 对白轨"}
@@ -944,15 +947,18 @@ function VideoPage({ videos, isLoading }) {
             </strong>
             <small>
               {englishDubbing?.status === "running"
-                ? "任务包含分段切割、英文配音和整轨混音，页面会自动刷新状态。"
+                ? "任务包含字幕预检、分段切割、增量配音和整轨混音，页面会自动刷新状态。"
                 : englishDubbing?.canRun
-                  ? "最终英文 SRT、DX 对白轨与 MX+FX 背景底轨已齐全。"
-                  : "需存在最终英文字幕 SRT、DX 对白轨与 MX+FX 背景底轨。"}
+                  ? englishDubbing?.mixOutdated
+                    ? "译稿或素材已变化，需要重新生成英文混音。"
+                    : "英文译稿、主时间轴与所需音轨已齐全。"
+                  : "需存在英文字幕译稿、最终中文字幕、DX 对白轨与 MX+FX 背景底轨。"}
             </small>
           </div>
           {englishDubbing?.inputs && (
             <div className="track-results input-results">
-              <FileResult label="最终英文字幕 SRT" file={englishDubbing.inputs.englishSrt} onOpen={openPath} readyText="已就绪" />
+              <FileResult label="最终中文字幕（主时间轴）" file={englishDubbing.inputs.chineseTimelineSrt} onOpen={openPath} readyText="已就绪" />
+              <FileResult label="英文字幕译稿" file={englishDubbing.inputs.englishDraftSrt} onOpen={openPath} readyText="已就绪" />
               <FileResult label="DX 对白轨" file={englishDubbing.inputs.dialogue} onOpen={openPath} readyText="已就绪" />
               <FileResult label="MX+FX 背景底轨" file={englishDubbing.inputs.background} onOpen={openPath} readyText="已就绪" />
             </div>
@@ -965,6 +971,8 @@ function VideoPage({ videos, isLoading }) {
           />
           {englishDubbing?.outputs && (
             <div className="track-results">
+              <FileResult label="受控英文字幕 SRT" file={englishDubbing.outputs.controlledEnglishSrt} onOpen={openPath} />
+              <FileResult label="英文字幕预检报告" file={englishDubbing.outputs.preflightReport} onOpen={openPath} />
               <FileResult label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
               <FileResult label="英文对白整轨" file={englishDubbing.outputs.dialogueTrack} onOpen={openPath} />
               <FileResult label="英文成片混音 MX+FX" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
@@ -994,7 +1002,7 @@ function VideoPage({ videos, isLoading }) {
         <div className="workflow-card manual-step final-video-step">
           <p className="eyebrow">步骤 07</p>
           <h2>替换英文音轨并烧录字幕</h2>
-          <p>用英文成片混音替换原视频音频，并将最终英文字幕按所选样式烧录到视频中，输出最终英文成片。</p>
+          <p>用英文成片混音替换原视频音频，并将受控英文字幕按所选样式烧录到视频中，输出最终英文成片。</p>
           <div className={`step-status ${finalVideo?.status || "blocked"}`}>
             <strong>
               {finalVideo?.status === "running" && "正在生成最终成片"}
@@ -1008,14 +1016,14 @@ function VideoPage({ videos, isLoading }) {
               {finalVideo?.status === "running"
                 ? "正在编码视频、烧录字幕并替换音频，页面会自动刷新状态。"
                 : finalVideo?.canRun
-                  ? "最终英文字幕与英文成片混音已齐全，可先生成参考帧确认样式。"
-                  : "需先生成最终英文 SRT 与步骤 06 的英文成片混音。"}
+                  ? "受控英文字幕与英文成片混音已齐全，可先生成参考帧确认样式。"
+                  : "需先完成步骤 06 的字幕预检与英文成片混音。"}
             </small>
           </div>
           {finalVideo?.inputs && (
             <div className="track-results input-results final-input-results">
               <FileResult label="原视频画面" file={finalVideo.inputs.video} onOpen={openPath} readyText="已就绪" />
-              <FileResult label="最终英文字幕 SRT" file={finalVideo.inputs.subtitle} onOpen={openPath} readyText="已就绪" />
+              <FileResult label="受控英文字幕 SRT" file={finalVideo.inputs.subtitle} onOpen={openPath} readyText="已就绪" />
               <FileResult label="替换音轨：英文成片混音" file={finalVideo.inputs.audio} onOpen={openPath} readyText="已就绪" />
             </div>
           )}
