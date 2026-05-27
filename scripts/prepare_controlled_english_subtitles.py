@@ -85,28 +85,39 @@ def validate_canonical(cues: list[Cue]) -> None:
             raise ValueError(f"主时间轴存在重叠：第 {previous.number} 段与第 {current.number} 段。")
 
 
-def build_controlled(canonical: list[Cue], translated: list[Cue]) -> tuple[list[Cue], list[int], list[int]]:
-    if len(canonical) != len(translated):
+def build_controlled(
+    canonical: list[Cue], translated: list[Cue]
+) -> tuple[list[Cue], list[int], list[int], list[int]]:
+    translated_by_number = {cue.number: cue for cue in translated}
+    canonical_numbers = {cue.number for cue in canonical}
+    unknown_numbers = sorted(number for number in translated_by_number if number not in canonical_numbers)
+    if unknown_numbers:
         raise ValueError(
-            f"中英文字幕条目数量不一致：主时间轴 {len(canonical)} 条，英文译稿 {len(translated)} 条。"
+            f"英文译稿包含主时间轴中不存在的编号：{', '.join(str(number) for number in unknown_numbers)}。"
         )
     timing_corrected: list[int] = []
     role_corrected: list[int] = []
+    skipped_numbers: list[int] = []
     controlled: list[Cue] = []
-    for master, draft in zip(canonical, translated):
-        if master.number != draft.number:
-            raise ValueError(f"英文译稿序号不匹配：主时间轴第 {master.number} 段对应了英文第 {draft.number} 段。")
+    for master in canonical:
+        draft = translated_by_number.get(master.number)
         master_role, _ = speaker_and_text(master.text)
+        if draft is None:
+            skipped_numbers.append(master.number)
+            continue
         draft_role, english_text = speaker_and_text(draft.text)
         if not english_text:
-            raise ValueError(f"英文译稿第 {draft.number} 段移除角色标签后没有正文。")
+            skipped_numbers.append(master.number)
+            continue
         if (draft.start, draft.end) != (master.start, master.end):
             timing_corrected.append(master.number)
         if draft_role != master_role:
             role_corrected.append(master.number)
         controlled_text = f"[{master_role}] {english_text}" if master_role else english_text
         controlled.append(Cue(master.number, master.start, master.end, controlled_text))
-    return controlled, timing_corrected, role_corrected
+    if not controlled:
+        raise ValueError("英文译稿没有可用于配音的字幕条目。")
+    return controlled, timing_corrected, role_corrected, skipped_numbers
 
 
 def output_text(cues: list[Cue]) -> str:
@@ -147,7 +158,7 @@ def main() -> int:
     canonical = load_srt(canonical_path)
     translated = load_srt(translated_path)
     validate_canonical(canonical)
-    controlled, timing_corrected, role_corrected = build_controlled(canonical, translated)
+    controlled, timing_corrected, role_corrected, skipped_numbers = build_controlled(canonical, translated)
     previous = load_srt(output_path) if output_path.is_file() else []
     changes = affected_segments(previous, controlled)
     content = output_text(controlled)
@@ -164,11 +175,13 @@ def main() -> int:
         "纠正时间码编号": timing_corrected,
         "纠正角色标签数量": len(role_corrected),
         "纠正角色标签编号": role_corrected,
+        "跳过编号": skipped_numbers,
+        "跳过数量": len(skipped_numbers),
         "受影响片段数量": len(changes),
         "受影响片段": changes,
     }
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"英文字幕预检通过：{len(controlled)} 条；受控时间轴：{output_path}", flush=True)
+    print(f"英文字幕预检通过：{len(controlled)} 条可配音字幕；跳过 {len(skipped_numbers)} 条。受控时间轴：{output_path}", flush=True)
     print(f"已纠正时间码：{len(timing_corrected)} 条；已统一角色标签：{len(role_corrected)} 条。", flush=True)
     print(f"相对上次受控字幕需更新片段：{len(changes)} 条；报告：{report_path}", flush=True)
     return 0

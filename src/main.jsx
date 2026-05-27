@@ -39,6 +39,28 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function buildTranslationPrompt(cues) {
+  if (cues.length === 0) {
+    return "";
+  }
+  return `你是一名专业的影视字幕翻译师。请把下列中文字幕翻译成自然、简洁、适合英文配音的英文字幕。
+
+要求：
+1. 保留原编号并按原编号顺序输出。
+2. 每行格式严格为：编号<TAB>英文正文，例如：001\tWhere are you going?
+3. 不要输出时间码、角色名、解释、Markdown 代码块或额外说明。
+4. 语气需要符合角色和情境，单句尽量适配原字幕时长，避免过长。
+5. 专有名词、画面文字或片尾文字也需给出英文，不能留空。
+
+字幕内容：
+${cues
+  .map(
+    (cue) =>
+      `${String(cue.number).padStart(3, "0")}\t[${cue.role || "无角色"}]\t${cue.chinese}`,
+  )
+  .join("\n")}`;
+}
+
 function FileResult({ label, file, onOpen, readyText = "已生成", missingText = "未生成" }) {
   const ready = Boolean(file?.ready);
   return (
@@ -225,6 +247,7 @@ function VideoPage({ videos, isLoading }) {
   const [subtitleEditorMessage, setSubtitleEditorMessage] = useState("");
   const [bulkEnglishText, setBulkEnglishText] = useState("");
   const [translationPromptVisible, setTranslationPromptVisible] = useState(false);
+  const [translationPromptText, setTranslationPromptText] = useState("");
   const [isSavingSubtitleEditor, setIsSavingSubtitleEditor] = useState(false);
   const [englishDubbing, setEnglishDubbing] = useState(null);
   const [englishDubbingError, setEnglishDubbingError] = useState("");
@@ -285,6 +308,7 @@ function VideoPage({ videos, isLoading }) {
     setSubtitleEditorMessage("");
     setBulkEnglishText("");
     setTranslationPromptVisible(false);
+    setTranslationPromptText("");
     setEnglishDubbingError("");
     setFinalVideoError("");
     setOpenPathError("");
@@ -422,6 +446,7 @@ function VideoPage({ videos, isLoading }) {
         if (active) {
           setSubtitleEditor(result);
           setSubtitleEditorCues(result.cues || []);
+          setTranslationPromptText(buildTranslationPrompt(result.cues || []));
         }
       })
       .catch((error) => {
@@ -483,7 +508,13 @@ function VideoPage({ videos, isLoading }) {
     return () => {
       active = false;
     };
-  }, [record, englishDubbing?.outputs?.mixedTrack?.ready]);
+  }, [
+    record,
+    englishDubbing?.status,
+    englishDubbing?.preflightOutdated,
+    englishDubbing?.mixOutdated,
+    englishDubbing?.outputs?.mixedTrack?.ready,
+  ]);
 
   useEffect(() => {
     if (!record || finalVideo?.status !== "running") {
@@ -560,38 +591,40 @@ function VideoPage({ videos, isLoading }) {
   const canTranslate = finalSubtitles?.outputs?.srt?.ready;
   const subtitleEditorComplete =
     subtitleEditorCues.length > 0 &&
-    subtitleEditorCues.every((cue) => cue.english.trim());
-  const missingEnglishNumbers = subtitleEditorCues
-    .filter((cue) => !cue.english.trim())
+    subtitleEditorCues.every((cue) => cue.english.trim() || cue.skipped);
+  const completedEnglishCount = subtitleEditorCues.filter((cue) => cue.english.trim()).length;
+  const skippedEnglishCount = subtitleEditorCues.filter((cue) => cue.skipped).length;
+  const pendingEnglishNumbers = subtitleEditorCues
+    .filter((cue) => !cue.english.trim() && !cue.skipped)
     .map((cue) => String(cue.number).padStart(3, "0"));
-  const translationPromptCues = subtitleEditorComplete
-    ? subtitleEditorCues
-    : subtitleEditorCues.filter((cue) => !cue.english.trim());
-  const translationPrompt =
-    translationPromptCues.length > 0
-      ? `你是一名专业的影视字幕翻译师。请把下列中文字幕翻译成自然、简洁、适合英文配音的英文字幕。
-
-要求：
-1. 只翻译下方列出的 ${translationPromptCues.length} 条，必须保留原编号并按原编号顺序输出。
-2. 每行格式严格为：编号<TAB>英文正文，例如：001\tWhere are you going?
-3. 不要输出时间码、角色名、解释、Markdown 代码块或额外说明。
-4. 语气需要符合角色和情境，单句尽量适配原字幕时长，避免过长。
-5. 专有名词、画面文字或片尾文字也需给出英文，不能留空。
-
-字幕内容：
-${translationPromptCues
-  .map(
-    (cue) =>
-      `${String(cue.number).padStart(3, "0")}\t[${cue.role || "无角色"}]\t${cue.chinese}`,
-  )
-  .join("\n")}`
-      : "";
+  const translationPrompt = translationPromptText || buildTranslationPrompt(subtitleEditorCues);
+  const missingEnglishDubbingInputs = englishDubbing?.inputs
+    ? [
+        !englishDubbing.inputs.chineseTimelineSrt?.ready && "最终中文字幕",
+        !englishDubbing.inputs.englishDraftSrt?.ready && "英文字幕译稿",
+        !englishDubbing.inputs.dialogue?.ready && "DX 对白轨",
+        !englishDubbing.inputs.background?.ready && "MX+FX 背景底轨",
+      ].filter(Boolean)
+    : [];
 
   const updateSubtitleCue = (number, field, value) => {
     setSubtitleEditorMessage("");
     setSubtitleEditorError("");
     setSubtitleEditorCues((cues) =>
-      cues.map((cue) => (cue.number === number ? { ...cue, [field]: value } : cue)),
+      cues.map((cue) => {
+        if (cue.number !== number) {
+          return cue;
+        }
+        if (field === "english") {
+          const english = value;
+          return {
+            ...cue,
+            english,
+            skipped: !english.trim(),
+          };
+        }
+        return { ...cue, [field]: value };
+      }),
     );
   };
 
@@ -614,10 +647,10 @@ ${translationPromptCues
   const applyBulkEnglishText = () => {
     const lines = bulkEnglishText
       .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean);
-    const numberedLines = lines.map((line) => /^(\d{1,3})\s*(?:\t|[:：-])\s*(.+)$/.exec(line));
-    if (numberedLines.every(Boolean)) {
+      .map((line) => line.replace(/\r$/, ""));
+    const nonEmptyLines = lines.filter((line) => line.trim());
+    const numberedLines = nonEmptyLines.map((line) => /^(\d{1,3})\s*(?:\t|[:：-])\s*(.*)$/.exec(line));
+    if (nonEmptyLines.length > 0 && numberedLines.every(Boolean)) {
       const imported = new Map(
         numberedLines.map((match) => [Number(match[1]), match[2].trim()]),
       );
@@ -630,21 +663,35 @@ ${translationPromptCues
       }
       setSubtitleEditorCues((cues) =>
         cues.map((cue) =>
-          imported.has(cue.number) ? { ...cue, english: imported.get(cue.number) } : cue,
+          imported.has(cue.number)
+            ? {
+                ...cue,
+                english: imported.get(cue.number),
+                skipped: !imported.get(cue.number),
+              }
+            : cue,
         ),
       );
       setSubtitleEditorError("");
-      setSubtitleEditorMessage(`已按编号导入 ${imported.size} 条英文正文，请检查后保存。`);
+      const importedCount = [...imported.values()].filter((text) => text).length;
+      setSubtitleEditorMessage(`已按编号导入 ${importedCount} 条英文正文，请检查后保存。`);
       return;
     }
     if (lines.length !== subtitleEditorCues.length) {
       setSubtitleEditorError(
-        `无编号导入需要 ${subtitleEditorCues.length} 行；也可粘贴“编号<TAB>英文”格式，仅更新对应条目。`,
+        `无编号导入需要 ${subtitleEditorCues.length} 行；空行会保留为跳过，也可粘贴“编号<TAB>英文”格式，仅更新对应条目。`,
       );
       return;
     }
     setSubtitleEditorCues((cues) =>
-      cues.map((cue, index) => ({ ...cue, english: lines[index] })),
+      cues.map((cue, index) => {
+        const english = lines[index].trim();
+        return {
+          ...cue,
+          english,
+          skipped: !english,
+        };
+      }),
     );
     setSubtitleEditorError("");
     setSubtitleEditorMessage(`已导入 ${lines.length} 条英文正文，请检查角色和语气后保存。`);
@@ -653,10 +700,16 @@ ${translationPromptCues
   const copyTranslationPrompt = async () => {
     try {
       await navigator.clipboard.writeText(translationPrompt);
-      setSubtitleEditorMessage("Gemini 翻译提示词已复制。将返回内容粘贴到批量导入框即可。");
+      setSubtitleEditorMessage("当前 Gemini 提示词已复制。复制内容为编辑后的版本。");
     } catch {
       setSubtitleEditorError("复制提示词失败，请在展开的提示词框中手动复制。");
     }
+  };
+
+  const resetTranslationPrompt = () => {
+    setTranslationPromptText(buildTranslationPrompt(subtitleEditorCues));
+    setSubtitleEditorMessage("已恢复原始 Gemini 提示词。");
+    setSubtitleEditorError("");
   };
 
   const saveSubtitleEdits = async () => {
@@ -668,19 +721,23 @@ ${translationPromptCues
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cues: subtitleEditorCues.map(({ number, role, english }) => ({
+          cues: subtitleEditorCues.map(({ number, role, english, skipped }) => ({
             number,
             role,
             english,
+            skipped,
           })),
         }),
       });
       setSubtitleEditor(result);
       setSubtitleEditorCues(result.cues);
+      const remainingEnglishCount = result.cues.filter((cue) => !cue.english.trim() && !cue.skipped).length;
       setSubtitleEditorMessage(
         result.complete
           ? "角色与英文字幕已保存。配音阶段将基于这些内容生成受控英文字幕。"
-          : `编辑进度已保存，仍有 ${result.cues.length - result.completedEnglishCount} 条英文待填写。`,
+          : remainingEnglishCount > 0
+            ? `编辑进度已保存，仍有 ${remainingEnglishCount} 条英文待填写。`
+            : "编辑进度已保存，留空条目已视为跳过。",
       );
       setFinalSubtitles(await requestJson(`/api/videos/${record.id}/workflow/final-subtitles`));
       setEnglishDubbing(await requestJson(`/api/videos/${record.id}/workflow/english-dubbing-mix`));
@@ -1024,27 +1081,34 @@ ${translationPromptCues
             <>
               <div className="subtitle-editor-summary">
                 <strong>{subtitleEditorCues.length} 条字幕</strong>
-                <span>已填写英文 {subtitleEditorCues.filter((cue) => cue.english.trim()).length} 条</span>
+                <span>已填写英文 {completedEnglishCount} 条</span>
+                <span>已跳过 {skippedEnglishCount} 条</span>
                 <span>时间码只读</span>
               </div>
-              {!subtitleEditorComplete && (
+              {pendingEnglishNumbers.length > 0 && (
                 <p className="subtitle-editor-missing">
-                  待补英文：{missingEnglishNumbers.join("、")}
+                  待处理英文：{pendingEnglishNumbers.join("、")}
+                </p>
+              )}
+              {skippedEnglishCount > 0 && (
+                <p className="subtitle-editor-skip-hint">
+                  留空条目会在保存时视为跳过，不会阻塞后续配音流程。
                 </p>
               )}
               {subtitleEditor.draftError && <p className="workflow-error">{subtitleEditor.draftError}</p>}
               <section className="translation-assistant-panel" aria-label="Gemini 翻译提示词">
                 <div>
-                  <strong>交给 Gemini 翻译</strong>
+                  <strong>原始 Gemini 提示词</strong>
                   <p>
-                    {subtitleEditorComplete
-                      ? "复制提示词后，将 Gemini 返回的编号英文行粘贴到下方批量导入框。"
-                      : "当前提示词仅包含未翻译条目，粘贴返回行即可补齐空缺。"}
+                    提示词可直接编辑，复制按钮会复制当前编辑后的内容。需要排除 OCR 噪声时，直接删掉对应条目即可。
                   </p>
                 </div>
                 <div className="translation-assistant-actions">
                   <button className="secondary-button compact" type="button" onClick={copyTranslationPrompt}>
-                    {subtitleEditorComplete ? "复制 Gemini 提示词" : "复制待补 Gemini 提示词"}
+                    复制当前提示词
+                  </button>
+                  <button className="secondary-button compact" type="button" onClick={resetTranslationPrompt}>
+                    恢复原始提示词
                   </button>
                   <button
                     className="secondary-button compact"
@@ -1057,20 +1121,20 @@ ${translationPromptCues
                 {translationPromptVisible && (
                   <textarea
                     className="translation-prompt"
-                    readOnly
                     rows={12}
                     value={translationPrompt}
+                    onChange={(event) => setTranslationPromptText(event.target.value)}
                   />
                 )}
               </section>
               <section className="bulk-translation-panel" aria-label="批量导入英文正文">
                 <label htmlFor="bulk-english-text">批量粘贴英文正文</label>
-                <p>支持粘贴全部英文行，也支持“编号 + 英文”格式只更新待补条目；亦可直接在下方逐句编辑。</p>
+                <p>支持粘贴全部英文行，也支持“编号 + 英文”格式只更新部分条目；空行会保留为跳过，亦可直接在下方逐句编辑。</p>
                 <textarea
                   id="bulk-english-text"
                   rows={4}
                   value={bulkEnglishText}
-                  placeholder={`粘贴 ${subtitleEditorCues.length} 行英文正文`}
+                  placeholder={`粘贴 ${subtitleEditorCues.length} 行英文正文，空行表示跳过`}
                   onChange={(event) => setBulkEnglishText(event.target.value)}
                 />
                 <button className="secondary-button compact" type="button" onClick={applyBulkEnglishText}>
@@ -1171,7 +1235,7 @@ ${translationPromptCues
               {englishDubbing?.status === "failed" && "处理失败"}
               {englishDubbing?.status === "unavailable" && "不可执行"}
               {(!englishDubbing || englishDubbing.status === "blocked") &&
-                (englishDubbing?.editorComplete === false ? "等待补全英文字幕" : "等待英文字幕与音轨")}
+                (missingEnglishDubbingInputs.length > 0 ? "等待必要输入就绪" : "等待英文字幕与音轨")}
               {englishDubbing?.status === "ready" && "可以开始"}
             </strong>
             <small>
@@ -1180,11 +1244,9 @@ ${translationPromptCues
                 : englishDubbing?.canRun
                   ? englishDubbing?.mixOutdated
                     ? "译稿或素材已变化，需要重新生成英文混音。"
-                    : "英文译稿、主时间轴与所需音轨已齐全。"
-                  : englishDubbing?.editorComplete === false
-                    ? `步骤 05 仍缺少英文字幕：${(englishDubbing.missingEnglishNumbers || [])
-                        .map((number) => String(number).padStart(3, "0"))
-                        .join("、")}。补全并保存后即可开始。`
+                    : "英文译稿、主时间轴与所需音轨已齐全，留空条目会自动跳过。"
+                  : missingEnglishDubbingInputs.length > 0
+                    ? `缺少：${missingEnglishDubbingInputs.join("、")}。留空条目会自动跳过。`
                     : "需存在英文字幕译稿、最终中文字幕、DX 对白轨与 MX+FX 背景底轨。"}
             </small>
           </div>

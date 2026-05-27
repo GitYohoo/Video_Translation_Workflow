@@ -433,6 +433,14 @@ async function writeFileIfChanged(filePath, content) {
   return true;
 }
 
+async function removeFileIfExists(filePath) {
+  const existed = await isFile(filePath);
+  if (existed) {
+    await fs.rm(filePath, { force: true });
+  }
+  return existed;
+}
+
 async function subtitleEditorState(record) {
   const paths = finalSubtitlesOutputPaths(record);
   if (!paths || !(await isFile(paths.srtPath))) {
@@ -449,24 +457,31 @@ async function subtitleEditorState(record) {
   );
   validateEditableMasterTimeline(canonical);
   let englishByNumber = new Map();
+  let skippedByNumber = new Map();
   let draftError = null;
+  let hasSavedTranslation = false;
   if (await isFile(paths.translationTarget.editorDraftPath)) {
     try {
       const savedDraft = JSON.parse(await fs.readFile(paths.translationTarget.editorDraftPath, "utf8"));
       if (!Array.isArray(savedDraft.cues)) {
         throw new Error("草稿内容缺少字幕列表。");
       }
-      englishByNumber = new Map(
-        savedDraft.cues.map((cue) => [
-          Number(cue.number),
-          typeof cue.english === "string" ? cue.english : "",
-        ]),
-      );
+      hasSavedTranslation = true;
+      for (const cue of savedDraft.cues) {
+        const number = Number(cue.number);
+        if (!Number.isInteger(number) || number <= 0) {
+          throw new Error("草稿内容中的字幕编号无效。");
+        }
+        const english = typeof cue.english === "string" ? cue.english.trim() : "";
+        englishByNumber.set(number, english);
+        skippedByNumber.set(number, Boolean(cue.skipped) || !english);
+      }
     } catch (error) {
       draftError = `无法读取字幕编辑草稿：${error.message}`;
     }
   } else if (await isFile(paths.translationTarget.srtPath)) {
     try {
+      hasSavedTranslation = true;
       const englishDraft = parseEditableSubtitleDocument(
         await fs.readFile(paths.translationTarget.srtPath, "utf8"),
         "英文字幕译稿",
@@ -474,19 +489,25 @@ async function subtitleEditorState(record) {
       englishByNumber = new Map(
         englishDraft.map((cue) => [cue.number, subtitleRoleAndText(cue.text).text]),
       );
+      skippedByNumber = new Map(englishDraft.map((cue) => [cue.number, false]));
     } catch (error) {
       draftError = error.message;
     }
   }
   const cues = canonical.map((cue) => {
     const canonicalParts = subtitleRoleAndText(cue.text);
+    const english = englishByNumber.get(cue.number) || "";
+    const skipped = skippedByNumber.has(cue.number)
+      ? skippedByNumber.get(cue.number)
+      : hasSavedTranslation && !english;
     return {
       number: cue.number,
       start: cue.start,
       end: cue.end,
       role: canonicalParts.role,
       chinese: canonicalParts.text,
-      english: englishByNumber.get(cue.number) || "",
+      english,
+      skipped,
     };
   });
   return {
@@ -494,8 +515,9 @@ async function subtitleEditorState(record) {
     canEdit: true,
     draftError,
     completedEnglishCount: cues.filter((cue) => cue.english).length,
-    missingEnglishNumbers: cues.filter((cue) => !cue.english).map((cue) => cue.number),
-    complete: cues.every((cue) => cue.english),
+    skippedEnglishCount: cues.filter((cue) => cue.skipped).length,
+    missingEnglishNumbers: cues.filter((cue) => !cue.english && !cue.skipped).map((cue) => cue.number),
+    complete: hasSavedTranslation && cues.every((cue) => cue.english || cue.skipped),
     cues,
   };
 }
@@ -532,7 +554,7 @@ async function saveSubtitleEditor(record, requestedCues) {
     if (english.length > 1000) {
       throw new Error(`第 ${requested.number} 段英文字幕过长。`);
     }
-    requestedByNumber.set(requested.number, { role, english });
+    requestedByNumber.set(requested.number, { role, english, skipped: !english });
   }
   const chineseCues = [];
   const englishCues = [];
@@ -543,38 +565,42 @@ async function saveSubtitleEditor(record, requestedCues) {
     }
     const chinese = subtitleRoleAndText(cue.text).text;
     chineseCues.push({ ...cue, text: taggedSubtitleText(requested.role, chinese) });
-    englishCues.push({ ...cue, text: taggedSubtitleText(requested.role, requested.english) });
+    if (requested.english) {
+      englishCues.push({ ...cue, text: taggedSubtitleText(requested.role, requested.english) });
+    }
   }
   const chineseChanged = await writeFileIfChanged(
     paths.srtPath,
     serializeEditableSubtitleDocument(chineseCues),
   );
-  const complete = englishCues.every((cue) => subtitleRoleAndText(cue.text).text);
   await writeFileIfChanged(
     paths.translationTarget.editorDraftPath,
     JSON.stringify(
       {
         savedAt: new Date().toISOString(),
-        cues: englishCues.map((cue) => ({
-          number: cue.number,
-          role: subtitleRoleAndText(cue.text).role,
-          english: subtitleRoleAndText(cue.text).text,
-        })),
+        cues: canonical.map((cue) => {
+          const requested = requestedByNumber.get(cue.number);
+          return {
+            number: cue.number,
+            role: requested.role,
+            english: requested.english,
+            skipped: requested.skipped,
+          };
+        }),
       },
       null,
       2,
     ),
   );
-  const englishChanged = complete
+  const englishChanged = englishCues.length > 0
     ? await writeFileIfChanged(
         paths.translationTarget.srtPath,
         serializeEditableSubtitleDocument(englishCues),
       )
-    : false;
+    : await removeFileIfExists(paths.translationTarget.srtPath);
   return {
     ...(await subtitleEditorState(record)),
     saved: true,
-    complete,
     chineseChanged,
     englishChanged,
   };
@@ -1252,7 +1278,6 @@ async function englishDubbingStatus(record) {
   const editor = await subtitleEditorState(record);
   const canRun =
     editor.canEdit &&
-    editor.complete &&
     inputs.chineseTimelineSrt.ready &&
     inputs.englishDraftSrt.ready &&
     inputs.dialogue.ready &&
@@ -1298,6 +1323,7 @@ async function englishDubbingStatus(record) {
     status,
     canRun,
     editorComplete: Boolean(editor.complete),
+    skippedEnglishNumbers: editor.cues.filter((cue) => cue.skipped).map((cue) => cue.number),
     missingEnglishNumbers: editor.missingEnglishNumbers || [],
     preflightOutdated,
     mixOutdated,
@@ -1328,8 +1354,8 @@ async function startEnglishDubbing(record) {
     throw new Error("该项目没有原视频路径，无法执行英文配音混音。");
   }
   const editor = await subtitleEditorState(record);
-  if (!editor.canEdit || !editor.complete) {
-    throw new Error("英文字幕尚未在页面中补全并保存，无法开始配音。");
+  if (!editor.canEdit) {
+    throw new Error("英文字幕编辑器尚未准备好，无法开始配音。");
   }
   const missingRequiredInputs = [];
   for (const inputPath of [
