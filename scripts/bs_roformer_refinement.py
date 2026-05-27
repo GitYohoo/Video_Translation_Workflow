@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 MODEL_FILENAME = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+AUDIO_SEPARATOR_ENTRYPOINT = "from audio_separator.utils.cli import main; main()"
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,7 +49,6 @@ def extract_fullband_audio(ffmpeg: Path, video: Path, audio_path: Path) -> None:
 
 
 def separate_dialogue_and_background(
-    separator_cli: Path,
     model_dir: Path,
     audio_path: Path,
     output_dir: Path,
@@ -64,7 +64,9 @@ def separate_dialogue_and_background(
     )
     run_command(
         [
-            str(separator_cli),
+            sys.executable,
+            "-c",
+            AUDIO_SEPARATOR_ENTRYPOINT,
             "--model_file_dir",
             str(model_dir),
             "--model_filename",
@@ -90,7 +92,6 @@ def main() -> int:
     video = Path(args.video).resolve()
     runtime_dir = Path(args.runtime_dir).resolve()
     ffmpeg_command = shutil.which("ffmpeg")
-    separator_cli = runtime_dir / "bs-roformer-venv" / "Scripts" / "audio-separator.exe"
     model_dir = runtime_dir / "bs-roformer-models"
     model_path = model_dir / MODEL_FILENAME
 
@@ -98,10 +99,12 @@ def main() -> int:
         raise FileNotFoundError(f"找不到输入视频：{video}")
     if not ffmpeg_command:
         raise FileNotFoundError("找不到 FFmpeg，请确认其 bin 目录已加入 PATH。")
-    if not separator_cli.is_file():
-        raise FileNotFoundError(f"找不到 audio-separator：{separator_cli}")
     if not model_path.is_file():
         raise FileNotFoundError(f"找不到 BS-RoFormer 模型：{model_path}")
+    try:
+        from audio_separator.utils.cli import main as _audio_separator_main
+    except ImportError as error:
+        raise FileNotFoundError("当前 Python 环境缺少 audio-separator 包。") from error
 
     output_root = (
         Path(args.output_root).resolve()
@@ -119,7 +122,6 @@ def main() -> int:
     extract_fullband_audio(ffmpeg, video, fullband_audio)
     print("正在生成 DX 对白轨与 MX+FX 无对白背景底轨...", flush=True)
     separate_dialogue_and_background(
-        separator_cli,
         model_dir,
         fullband_audio,
         stems_output_dir,
