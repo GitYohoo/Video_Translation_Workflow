@@ -522,6 +522,63 @@ async function subtitleEditorState(record) {
   };
 }
 
+async function importTranslatedSubtitleFile(record) {
+  if (activeEnglishDubbingTasks.get(record.id)?.status === "running") {
+    throw new Error("英文配音正在运行，完成后再读取英文字幕译稿。");
+  }
+  const paths = finalSubtitlesOutputPaths(record);
+  if (!paths || !(await isFile(paths.srtPath))) {
+    throw new Error("请先生成最终中文字幕。");
+  }
+  if (!(await isFile(paths.translationTarget.srtPath))) {
+    throw new Error(`找不到 Gemini 输出的英文字幕文件：${paths.translationTarget.srtPath}`);
+  }
+  const canonical = parseEditableSubtitleDocument(
+    await fs.readFile(paths.srtPath, "utf8"),
+    "最终中文字幕",
+  );
+  validateEditableMasterTimeline(canonical);
+  const translated = parseEditableSubtitleDocument(
+    await fs.readFile(paths.translationTarget.srtPath, "utf8"),
+    "英文字幕译稿",
+  );
+  const canonicalByNumber = new Map(canonical.map((cue) => [cue.number, cue]));
+  const translatedByNumber = new Map();
+  for (const cue of translated) {
+    if (!canonicalByNumber.has(cue.number)) {
+      throw new Error(`英文字幕译稿包含主时间轴中不存在的编号：${cue.number}。`);
+    }
+    if (translatedByNumber.has(cue.number)) {
+      throw new Error(`英文字幕译稿包含重复编号：${cue.number}。`);
+    }
+    translatedByNumber.set(cue.number, subtitleRoleAndText(cue.text).text);
+  }
+  await writeFileIfChanged(
+    paths.translationTarget.editorDraftPath,
+    JSON.stringify(
+      {
+        savedAt: new Date().toISOString(),
+        importedFromSrt: paths.translationTarget.srtPath,
+        cues: canonical.map((cue) => {
+          const english = translatedByNumber.get(cue.number) || "";
+          return {
+            number: cue.number,
+            role: subtitleRoleAndText(cue.text).role,
+            english,
+            skipped: !english,
+          };
+        }),
+      },
+      null,
+      2,
+    ),
+  );
+  return {
+    ...(await subtitleEditorState(record)),
+    imported: true,
+  };
+}
+
 async function saveSubtitleEditor(record, requestedCues) {
   if (activeEnglishDubbingTasks.get(record.id)?.status === "running") {
     throw new Error("英文配音正在运行，完成后再保存字幕修改。");
@@ -2107,6 +2164,20 @@ app.put("/api/videos/:id/workflow/subtitle-editor", async (request, response, ne
       return;
     }
     response.json(await saveSubtitleEditor(video, request.body?.cues));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/workflow/subtitle-editor/import-srt", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    response.json(await importTranslatedSubtitleFile(video));
   } catch (error) {
     next(error);
   }

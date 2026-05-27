@@ -39,26 +39,24 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function buildTranslationPrompt(cues) {
-  if (cues.length === 0) {
+function buildTranslationPrompt(chineseSrtPath, englishSrtPath) {
+  if (!chineseSrtPath || !englishSrtPath) {
     return "";
   }
-  return `你是一名专业的影视字幕翻译师。请把下列中文字幕翻译成自然、简洁、适合英文配音的英文字幕。
+  return `你是一名专业的影视字幕翻译师。请读取以下中文字幕 SRT 文件，将字幕正文翻译成自然、简洁、适合英文配音的英文，并将结果写入指定英文字幕文件。
+
+输入文件：
+${chineseSrtPath}
+
+输出文件：
+${englishSrtPath}
 
 要求：
-1. 保留原编号并按原编号顺序输出。
-2. 每行格式严格为：编号<TAB>英文正文，例如：001\tWhere are you going?
-3. 不要输出时间码、角色名、解释、Markdown 代码块或额外说明。
-4. 语气需要符合角色和情境，单句尽量适配原字幕时长，避免过长。
-5. 专有名词、画面文字或片尾文字也需给出英文，不能留空。
-
-字幕内容：
-${cues
-  .map(
-    (cue) =>
-      `${String(cue.number).padStart(3, "0")}\t[${cue.role || "无角色"}]\t${cue.chinese}`,
-  )
-  .join("\n")}`;
+1. 输出文件必须保持标准 SRT 格式；除第 4 条允许删除的误识别条目外，与输入文件保持相同的字幕编号、时间码和条目顺序。
+2. 只翻译字幕正文；若正文包含开头的角色标签，例如 [黑猫]，必须原样保留标签，仅翻译其后的台词。
+3. 译文应自然、简洁，适合英文配音，并尽量适配该条字幕时间窗。
+4. 若确认某个 SRT 条目是 OCR 误识别的无效文字，可以在输出文件中删除整个条目。
+5. 不要修改输入文件，不要在输出文件外附加解释、标题或 Markdown 内容。`;
 }
 
 function FileResult({ label, file, onOpen, readyText = "已生成", missingText = "未生成" }) {
@@ -243,9 +241,9 @@ function VideoPage({ videos, isLoading }) {
   const [subtitleEditorCues, setSubtitleEditorCues] = useState([]);
   const [subtitleEditorError, setSubtitleEditorError] = useState("");
   const [subtitleEditorMessage, setSubtitleEditorMessage] = useState("");
-  const [bulkEnglishText, setBulkEnglishText] = useState("");
   const [translationPromptVisible, setTranslationPromptVisible] = useState(false);
   const [translationPromptText, setTranslationPromptText] = useState("");
+  const [isImportingTranslationSrt, setIsImportingTranslationSrt] = useState(false);
   const [isSavingSubtitleEditor, setIsSavingSubtitleEditor] = useState(false);
   const [englishDubbing, setEnglishDubbing] = useState(null);
   const [englishDubbingError, setEnglishDubbingError] = useState("");
@@ -304,9 +302,9 @@ function VideoPage({ videos, isLoading }) {
     setSubtitleEditorCues([]);
     setSubtitleEditorError("");
     setSubtitleEditorMessage("");
-    setBulkEnglishText("");
     setTranslationPromptVisible(false);
     setTranslationPromptText("");
+    setIsImportingTranslationSrt(false);
     setEnglishDubbingError("");
     setFinalVideoError("");
     setOpenPathError("");
@@ -444,7 +442,12 @@ function VideoPage({ videos, isLoading }) {
         if (active) {
           setSubtitleEditor(result);
           setSubtitleEditorCues(result.cues || []);
-          setTranslationPromptText(buildTranslationPrompt(result.cues || []));
+          setTranslationPromptText(
+            buildTranslationPrompt(
+              finalSubtitles.outputs.srt.path,
+              finalSubtitles.translationTarget.srtPath,
+            ),
+          );
         }
       })
       .catch((error) => {
@@ -595,7 +598,12 @@ function VideoPage({ videos, isLoading }) {
   const pendingEnglishNumbers = subtitleEditorCues
     .filter((cue) => !cue.english.trim() && !cue.skipped)
     .map((cue) => String(cue.number).padStart(3, "0"));
-  const translationPrompt = translationPromptText || buildTranslationPrompt(subtitleEditorCues);
+  const translationPrompt =
+    translationPromptText ||
+    buildTranslationPrompt(
+      finalSubtitles?.outputs?.srt?.path,
+      finalSubtitles?.translationTarget?.srtPath,
+    );
   const missingEnglishDubbingInputs = englishDubbing?.inputs
     ? [
         !englishDubbing.inputs.chineseTimelineSrt?.ready && "最终中文字幕",
@@ -642,59 +650,6 @@ function VideoPage({ videos, isLoading }) {
     setSubtitleEditorMessage(`已将角色“${sourceCue.role || "未标注"}”统一替换为“${editedCue.role || "未标注"}”。`);
   };
 
-  const applyBulkEnglishText = () => {
-    const lines = bulkEnglishText
-      .split(/\r?\n/)
-      .map((line) => line.replace(/\r$/, ""));
-    const nonEmptyLines = lines.filter((line) => line.trim());
-    const numberedLines = nonEmptyLines.map((line) => /^(\d{1,3})\s*(?:\t|[:：-])\s*(.*)$/.exec(line));
-    if (nonEmptyLines.length > 0 && numberedLines.every(Boolean)) {
-      const imported = new Map(
-        numberedLines.map((match) => [Number(match[1]), match[2].trim()]),
-      );
-      const unknownNumbers = [...imported.keys()].filter(
-        (number) => !subtitleEditorCues.some((cue) => cue.number === number),
-      );
-      if (unknownNumbers.length > 0) {
-        setSubtitleEditorError(`导入内容包含未知编号：${unknownNumbers.join("、")}。`);
-        return;
-      }
-      setSubtitleEditorCues((cues) =>
-        cues.map((cue) =>
-          imported.has(cue.number)
-            ? {
-                ...cue,
-                english: imported.get(cue.number),
-                skipped: !imported.get(cue.number),
-              }
-            : cue,
-        ),
-      );
-      setSubtitleEditorError("");
-      const importedCount = [...imported.values()].filter((text) => text).length;
-      setSubtitleEditorMessage(`已按编号导入 ${importedCount} 条英文正文，请检查后保存。`);
-      return;
-    }
-    if (lines.length !== subtitleEditorCues.length) {
-      setSubtitleEditorError(
-        `无编号导入需要 ${subtitleEditorCues.length} 行；空行会保留为跳过，也可粘贴“编号<TAB>英文”格式，仅更新对应条目。`,
-      );
-      return;
-    }
-    setSubtitleEditorCues((cues) =>
-      cues.map((cue, index) => {
-        const english = lines[index].trim();
-        return {
-          ...cue,
-          english,
-          skipped: !english,
-        };
-      }),
-    );
-    setSubtitleEditorError("");
-    setSubtitleEditorMessage(`已导入 ${lines.length} 条英文正文，请检查角色和语气后保存。`);
-  };
-
   const copyTranslationPrompt = async () => {
     try {
       await navigator.clipboard.writeText(translationPrompt);
@@ -705,9 +660,37 @@ function VideoPage({ videos, isLoading }) {
   };
 
   const resetTranslationPrompt = () => {
-    setTranslationPromptText(buildTranslationPrompt(subtitleEditorCues));
+    setTranslationPromptText(
+      buildTranslationPrompt(
+        finalSubtitles?.outputs?.srt?.path,
+        finalSubtitles?.translationTarget?.srtPath,
+      ),
+    );
     setSubtitleEditorMessage("已恢复原始 Gemini 提示词。");
     setSubtitleEditorError("");
+  };
+
+  const importTranslationSrt = async () => {
+    setIsImportingTranslationSrt(true);
+    setSubtitleEditorError("");
+    setSubtitleEditorMessage("");
+    try {
+      const result = await requestJson(`/api/videos/${record.id}/workflow/subtitle-editor/import-srt`, {
+        method: "POST",
+      });
+      setSubtitleEditor(result);
+      setSubtitleEditorCues(result.cues);
+      setSubtitleEditorMessage(
+        `已解析英文字幕文件：导入 ${result.completedEnglishCount} 条，跳过 ${result.skippedEnglishCount} 条。请校对后保存。`,
+      );
+      setFinalSubtitles(await requestJson(`/api/videos/${record.id}/workflow/final-subtitles`));
+      setEnglishDubbing(await requestJson(`/api/videos/${record.id}/workflow/english-dubbing-mix`));
+      setFinalVideo(await requestJson(`/api/videos/${record.id}/workflow/final-video`));
+    } catch (error) {
+      setSubtitleEditorError(error.message);
+    } finally {
+      setIsImportingTranslationSrt(false);
+    }
   };
 
   const saveSubtitleEdits = async () => {
@@ -1064,14 +1047,14 @@ function VideoPage({ videos, isLoading }) {
         <div className="workflow-card manual-step">
           <p className="eyebrow">步骤 05</p>
           <h2>角色校对与英文翻译</h2>
-          <p>直接在页面内校对角色并填写英文正文。时间轴固定来自最终中文字幕，保存操作不会修改起止时间。</p>
+          <p>将最终中文字幕文件交给 Gemini 生成同格式英文 SRT，再读取文件校对角色与译文。时间轴始终固定来自最终中文字幕。</p>
           <div className={`step-status ${canTranslate ? "ready" : "blocked"}`}>
-            <strong>{canTranslate ? "可以编辑字幕" : "等待最终中文字幕"}</strong>
+            <strong>{canTranslate ? "可以翻译与校对" : "等待最终中文字幕"}</strong>
             <small>
               {canTranslate
                 ? subtitleEditorComplete
-                  ? "所有英文条目已填写，保存后可进入英文配音。"
-                  : "先校对角色并补全每条英文字幕，保存后再进入英文配音。"
+                  ? "英文译稿已解析，可继续校对并保存后进入英文配音。"
+                  : "复制提示词交给 Gemini 生成英文 SRT，再读取文件并校对。"
                 : "请先完成步骤 04，生成最终中文字幕 SRT。"}
             </small>
           </div>
@@ -1096,9 +1079,9 @@ function VideoPage({ videos, isLoading }) {
               {subtitleEditor.draftError && <p className="workflow-error">{subtitleEditor.draftError}</p>}
               <section className="translation-assistant-panel" aria-label="Gemini 翻译提示词">
                 <div>
-                  <strong>原始 Gemini 提示词</strong>
+                  <strong>Gemini 文件翻译提示词</strong>
                   <p>
-                    提示词可直接编辑，复制按钮会复制当前编辑后的内容。需要排除 OCR 噪声时，直接删掉对应条目即可。
+                    提示词可编辑，要求 Gemini 读取中文字幕 SRT 并输出同格式英文 SRT。复制按钮会复制当前内容。
                   </p>
                 </div>
                 <div className="translation-assistant-actions">
@@ -1125,18 +1108,30 @@ function VideoPage({ videos, isLoading }) {
                   />
                 )}
               </section>
-              <section className="bulk-translation-panel" aria-label="批量导入英文正文">
-                <label htmlFor="bulk-english-text">批量粘贴英文正文</label>
-                <p>支持粘贴全部英文行，也支持“编号 + 英文”格式只更新部分条目；空行会保留为跳过，亦可直接在下方逐句编辑。</p>
-                <textarea
-                  id="bulk-english-text"
-                  rows={4}
-                  value={bulkEnglishText}
-                  placeholder={`粘贴 ${subtitleEditorCues.length} 行英文正文，空行表示跳过`}
-                  onChange={(event) => setBulkEnglishText(event.target.value)}
-                />
-                <button className="secondary-button compact" type="button" onClick={applyBulkEnglishText}>
-                  按行导入英文
+              <section className="translation-file-panel" aria-label="字幕文件交接">
+                <div className="track-results">
+                  <FileResult
+                    label="Gemini 输入：最终中文字幕 SRT"
+                    file={finalSubtitles.outputs.srt}
+                    onOpen={openPath}
+                    readyText="已就绪"
+                  />
+                  <FileResult
+                    label="Gemini 输出：英文字幕译稿 SRT"
+                    file={{
+                      path: finalSubtitles.translationTarget.srtPath,
+                      ready: finalSubtitles.translationTarget.srtReady,
+                    }}
+                    onOpen={openPath}
+                  />
+                </div>
+                <button
+                  className="secondary-button compact"
+                  disabled={isImportingTranslationSrt || !finalSubtitles.translationTarget.srtReady}
+                  type="button"
+                  onClick={importTranslationSrt}
+                >
+                  {isImportingTranslationSrt ? "正在读取..." : "读取 Gemini 输出 SRT"}
                 </button>
               </section>
               <div className="subtitle-editor-table" role="table" aria-label="字幕翻译与角色校对">

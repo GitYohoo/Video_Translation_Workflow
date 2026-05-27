@@ -747,7 +747,7 @@ button {
   margin-top: 2px;
 }
 
-.bulk-translation-panel {
+.translation-file-panel {
   background: #f7f9fc;
   border: 1px solid #e3e8ef;
   border-radius: 12px;
@@ -755,22 +755,10 @@ button {
   padding: 15px;
 }
 
-.bulk-translation-panel label {
-  color: #263248;
-  display: block;
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 5px;
+.translation-file-panel .track-results {
+  margin-bottom: 12px;
 }
 
-.bulk-translation-panel p {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-  margin: 0 0 10px;
-}
-
-.bulk-translation-panel textarea,
 .subtitle-editor-row textarea,
 .subtitle-role-field input {
   background: #fff;
@@ -780,17 +768,6 @@ button {
   font: inherit;
 }
 
-.bulk-translation-panel textarea {
-  display: block;
-  font-size: 13px;
-  line-height: 1.55;
-  margin-bottom: 10px;
-  padding: 10px;
-  resize: vertical;
-  width: 100%;
-}
-
-.bulk-translation-panel textarea:focus,
 .subtitle-editor-row textarea:focus,
 .subtitle-role-field input:focus {
   border-color: var(--accent);
