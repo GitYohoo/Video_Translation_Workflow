@@ -63,36 +63,34 @@ ${cues
 
 function FileResult({ label, file, onOpen, readyText = "已生成", missingText = "未生成" }) {
   const ready = Boolean(file?.ready);
+  const displayPath = ready ? file.path : "未生成";
   return (
-    <div className={ready ? "ready" : ""}>
-      <div className="result-heading">
-        <strong>{label}</strong>
-        <span className="result-actions">
-          <small>{ready ? readyText : missingText}</small>
-          {ready && (
-            <button className="open-path-button" type="button" onClick={() => onOpen(file.path)}>
-              打开
-            </button>
-          )}
-        </span>
-      </div>
-      <code className={ready ? "" : "empty-path"}>{ready ? file.path : "未生成"}</code>
+    <div className={`result-line ${ready ? "ready" : ""}`}>
+      <strong className="result-label">{label}</strong>
+      <code className={ready ? "" : "empty-path"} title={displayPath}>{displayPath}</code>
+      <span className="result-actions">
+        <small>{ready ? readyText : missingText}</small>
+        {ready && (
+          <button className="open-path-button" type="button" onClick={() => onOpen(file.path)}>
+            打开
+          </button>
+        )}
+      </span>
     </div>
   );
 }
 
 function DirectoryResult({ label, path, ready, onOpen }) {
+  const displayPath = ready ? path : "未生成";
   return (
-    <div className="output-root">
-      <div className="result-heading">
-        <span>{label}</span>
-        {ready && (
-          <button className="open-path-button" type="button" onClick={() => onOpen(path)}>
-            打开
-          </button>
-        )}
-      </div>
-      <code className={ready ? "" : "empty-path"}>{ready ? path : "未生成"}</code>
+    <div className={`output-root result-line ${ready ? "ready" : ""}`}>
+      <strong className="result-label">{label}</strong>
+      <code className={ready ? "" : "empty-path"} title={displayPath}>{displayPath}</code>
+      {ready && (
+        <button className="open-path-button" type="button" onClick={() => onOpen(path)}>
+          打开
+        </button>
+      )}
     </div>
   );
 }

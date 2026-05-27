@@ -516,27 +516,18 @@ button {
 }
 
 .output-root {
-  margin-bottom: 17px;
-}
-
-.output-root span {
-  color: var(--muted);
-  display: block;
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 7px;
-}
-
-.result-heading {
   align-items: center;
   display: flex;
   gap: 10px;
-  justify-content: space-between;
-  margin-bottom: 8px;
+  margin-bottom: 17px;
+  min-width: 0;
 }
 
-.output-root .result-heading span {
-  margin-bottom: 0;
+.result-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  flex: none;
 }
 
 .output-root code,
@@ -545,11 +536,15 @@ button {
   border-radius: 8px;
   color: #435069;
   display: block;
+  flex: 1;
   font-family: Consolas, "Microsoft YaHei UI", monospace;
   font-size: 12px;
   line-height: 1.55;
-  overflow-wrap: anywhere;
+  min-width: 0;
+  overflow: hidden;
   padding: 9px 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .output-root code.empty-path,
@@ -569,16 +564,18 @@ button {
 }
 
 .track-results > div {
+  align-items: center;
   border: 1px solid #edf1f6;
   border-radius: 10px;
+  display: flex;
+  gap: 10px;
+  min-width: 0;
   padding: 10px;
 }
 
 .track-results strong {
   color: #263248;
-  display: inline-block;
   font-size: 13px;
-  margin-bottom: 0;
 }
 
 .track-results small {
@@ -589,6 +586,7 @@ button {
 .result-actions {
   align-items: center;
   display: flex;
+  flex: none;
   gap: 9px;
   margin-left: auto;
 }
