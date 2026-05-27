@@ -101,6 +101,9 @@ const videoMimeTypes = new Map([
   [".flv", "video/x-flv"],
   [".ts", "video/mp2t"],
 ]);
+const editableSubtitleTimePattern =
+  /^(?<start>\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*(?<end>\d{2}:\d{2}:\d{2}[,.]\d{3})$/;
+const editableSubtitleSpeakerPattern = /^\[(?<speaker>[^\]\r\n]+)\]\s*(?<text>[\s\S]*)$/;
 
 await fs.mkdir(dataDirectory, { recursive: true });
 await fs.mkdir(uploadDirectory, { recursive: true });
@@ -217,6 +220,7 @@ function finalSubtitlesOutputPaths(record) {
     translationTarget: {
       outputDirectory: translationOutputDirectory,
       srtPath: path.join(translationOutputDirectory, `${videoStem}_最终英文字幕.srt`),
+      editorDraftPath: path.join(translationOutputDirectory, `${videoStem}_字幕编辑草稿.json`),
     },
     controlledTarget: {
       srtPath: path.join(translationOutputDirectory, `${videoStem}_受控英文字幕.srt`),
@@ -337,6 +341,244 @@ async function modificationTime(filePath) {
   }
 }
 
+function parseSubtitleMilliseconds(value) {
+  const [hours, minutes, secondsPart] = value.replace(".", ",").split(":");
+  const [seconds, milliseconds] = secondsPart.split(",");
+  return (
+    Number(hours) * 3_600_000 +
+    Number(minutes) * 60_000 +
+    Number(seconds) * 1000 +
+    Number(milliseconds)
+  );
+}
+
+function parseEditableSubtitleDocument(content, label) {
+  const blocks = content
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .split(/\r?\n\s*\r?\n/)
+    .filter(Boolean);
+  if (blocks.length === 0) {
+    throw new Error(`${label}没有字幕条目。`);
+  }
+  return blocks.map((block, index) => {
+    const lines = block.split(/\r?\n/);
+    const number = Number(lines[0]?.trim());
+    if (!Number.isInteger(number) || number <= 0 || lines.length < 3) {
+      throw new Error(`${label}第 ${index + 1} 段格式无效。`);
+    }
+    const timeMatch = editableSubtitleTimePattern.exec(lines[1]?.trim());
+    if (!timeMatch) {
+      throw new Error(`${label}第 ${number} 段时间格式无效。`);
+    }
+    const start = timeMatch.groups.start.replace(".", ",");
+    const end = timeMatch.groups.end.replace(".", ",");
+    const startMs = parseSubtitleMilliseconds(start);
+    const endMs = parseSubtitleMilliseconds(end);
+    if (endMs <= startMs) {
+      throw new Error(`${label}第 ${number} 段结束时间必须晚于开始时间。`);
+    }
+    const text = lines.slice(2).join("\n").trim();
+    if (!text) {
+      throw new Error(`${label}第 ${number} 段没有字幕正文。`);
+    }
+    return { number, start, end, startMs, endMs, text };
+  });
+}
+
+function subtitleRoleAndText(text) {
+  const match = editableSubtitleSpeakerPattern.exec(text.trim());
+  if (!match) {
+    return { role: "", text: text.trim() };
+  }
+  return {
+    role: match.groups.speaker.trim(),
+    text: match.groups.text.trim(),
+  };
+}
+
+function validateEditableMasterTimeline(cues) {
+  cues.forEach((cue, index) => {
+    if (cue.number !== index + 1) {
+      throw new Error(`最终中文字幕编号不连续：期望第 ${index + 1} 段。`);
+    }
+    if (index > 0 && cue.startMs < cues[index - 1].endMs) {
+      throw new Error(`最终中文字幕存在时间重叠：第 ${cue.number - 1} 与 ${cue.number} 段。`);
+    }
+  });
+}
+
+function taggedSubtitleText(role, text) {
+  return role ? `[${role}] ${text}` : text;
+}
+
+function serializeEditableSubtitleDocument(cues) {
+  return `\uFEFF${cues
+    .map((cue) => `${cue.number}\n${cue.start} --> ${cue.end}\n${cue.text}\n`)
+    .join("\n")}`;
+}
+
+async function writeFileIfChanged(filePath, content) {
+  const existing = await fs.readFile(filePath, "utf8").catch((error) => {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  });
+  if (existing === content) {
+    return false;
+  }
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content, "utf8");
+  return true;
+}
+
+async function subtitleEditorState(record) {
+  const paths = finalSubtitlesOutputPaths(record);
+  if (!paths || !(await isFile(paths.srtPath))) {
+    return {
+      status: "blocked",
+      canEdit: false,
+      error: "请先生成最终中文字幕。",
+      cues: [],
+    };
+  }
+  const canonical = parseEditableSubtitleDocument(
+    await fs.readFile(paths.srtPath, "utf8"),
+    "最终中文字幕",
+  );
+  validateEditableMasterTimeline(canonical);
+  let englishByNumber = new Map();
+  let draftError = null;
+  if (await isFile(paths.translationTarget.editorDraftPath)) {
+    try {
+      const savedDraft = JSON.parse(await fs.readFile(paths.translationTarget.editorDraftPath, "utf8"));
+      if (!Array.isArray(savedDraft.cues)) {
+        throw new Error("草稿内容缺少字幕列表。");
+      }
+      englishByNumber = new Map(
+        savedDraft.cues.map((cue) => [
+          Number(cue.number),
+          typeof cue.english === "string" ? cue.english : "",
+        ]),
+      );
+    } catch (error) {
+      draftError = `无法读取字幕编辑草稿：${error.message}`;
+    }
+  } else if (await isFile(paths.translationTarget.srtPath)) {
+    try {
+      const englishDraft = parseEditableSubtitleDocument(
+        await fs.readFile(paths.translationTarget.srtPath, "utf8"),
+        "英文字幕译稿",
+      );
+      englishByNumber = new Map(
+        englishDraft.map((cue) => [cue.number, subtitleRoleAndText(cue.text).text]),
+      );
+    } catch (error) {
+      draftError = error.message;
+    }
+  }
+  const cues = canonical.map((cue) => {
+    const canonicalParts = subtitleRoleAndText(cue.text);
+    return {
+      number: cue.number,
+      start: cue.start,
+      end: cue.end,
+      role: canonicalParts.role,
+      chinese: canonicalParts.text,
+      english: englishByNumber.get(cue.number) || "",
+    };
+  });
+  return {
+    status: "ready",
+    canEdit: true,
+    draftError,
+    completedEnglishCount: cues.filter((cue) => cue.english).length,
+    complete: cues.every((cue) => cue.english),
+    cues,
+  };
+}
+
+async function saveSubtitleEditor(record, requestedCues) {
+  if (activeEnglishDubbingTasks.get(record.id)?.status === "running") {
+    throw new Error("英文配音正在运行，完成后再保存字幕修改。");
+  }
+  if (!Array.isArray(requestedCues)) {
+    throw new Error("缺少字幕编辑内容。");
+  }
+  const paths = finalSubtitlesOutputPaths(record);
+  if (!paths || !(await isFile(paths.srtPath))) {
+    throw new Error("请先生成最终中文字幕。");
+  }
+  const canonical = parseEditableSubtitleDocument(
+    await fs.readFile(paths.srtPath, "utf8"),
+    "最终中文字幕",
+  );
+  validateEditableMasterTimeline(canonical);
+  if (requestedCues.length !== canonical.length) {
+    throw new Error(`字幕条目数量不一致：应为 ${canonical.length} 条。`);
+  }
+  const requestedByNumber = new Map();
+  for (const requested of requestedCues) {
+    if (!Number.isInteger(requested?.number) || requestedByNumber.has(requested.number)) {
+      throw new Error("字幕编号缺失或重复。");
+    }
+    const role = typeof requested.role === "string" ? requested.role.trim() : "";
+    const english = typeof requested.english === "string" ? requested.english.trim() : "";
+    if (/[\[\]\r\n]/.test(role) || role.length > 80) {
+      throw new Error(`第 ${requested.number} 段角色名格式无效。`);
+    }
+    if (english.length > 1000) {
+      throw new Error(`第 ${requested.number} 段英文字幕过长。`);
+    }
+    requestedByNumber.set(requested.number, { role, english });
+  }
+  const chineseCues = [];
+  const englishCues = [];
+  for (const cue of canonical) {
+    const requested = requestedByNumber.get(cue.number);
+    if (!requested) {
+      throw new Error(`缺少第 ${cue.number} 段字幕编辑内容。`);
+    }
+    const chinese = subtitleRoleAndText(cue.text).text;
+    chineseCues.push({ ...cue, text: taggedSubtitleText(requested.role, chinese) });
+    englishCues.push({ ...cue, text: taggedSubtitleText(requested.role, requested.english) });
+  }
+  const chineseChanged = await writeFileIfChanged(
+    paths.srtPath,
+    serializeEditableSubtitleDocument(chineseCues),
+  );
+  const complete = englishCues.every((cue) => subtitleRoleAndText(cue.text).text);
+  await writeFileIfChanged(
+    paths.translationTarget.editorDraftPath,
+    JSON.stringify(
+      {
+        savedAt: new Date().toISOString(),
+        cues: englishCues.map((cue) => ({
+          number: cue.number,
+          role: subtitleRoleAndText(cue.text).role,
+          english: subtitleRoleAndText(cue.text).text,
+        })),
+      },
+      null,
+      2,
+    ),
+  );
+  const englishChanged = complete
+    ? await writeFileIfChanged(
+        paths.translationTarget.srtPath,
+        serializeEditableSubtitleDocument(englishCues),
+      )
+    : false;
+  return {
+    ...(await subtitleEditorState(record)),
+    saved: true,
+    complete,
+    chineseChanged,
+    englishChanged,
+  };
+}
+
 function knownProjectPaths(record) {
   const separation = bsRoformerOutputPaths(record);
   const ocr = ocrOutputPaths(record);
@@ -361,6 +603,7 @@ function knownProjectPaths(record) {
     finalSubtitles?.srtPath,
     finalSubtitles?.translationTarget?.outputDirectory,
     finalSubtitles?.translationTarget?.srtPath,
+    finalSubtitles?.translationTarget?.editorDraftPath,
     finalSubtitles?.controlledTarget?.srtPath,
     finalSubtitles?.controlledTarget?.reportPath,
     dubbing?.workDirectory,
@@ -1005,7 +1248,10 @@ async function englishDubbingStatus(record) {
     ]),
   );
   const inputs = Object.fromEntries(inputEntries);
+  const editor = await subtitleEditorState(record);
   const canRun =
+    editor.canEdit &&
+    editor.complete &&
     inputs.chineseTimelineSrt.ready &&
     inputs.englishDraftSrt.ready &&
     inputs.dialogue.ready &&
@@ -1050,6 +1296,7 @@ async function englishDubbingStatus(record) {
   return {
     status,
     canRun,
+    editorComplete: Boolean(editor.complete),
     preflightOutdated,
     mixOutdated,
     stage: task?.stage || null,
@@ -1077,6 +1324,10 @@ async function startEnglishDubbing(record) {
   const paths = englishDubbingOutputPaths(record);
   if (!paths) {
     throw new Error("该项目没有原视频路径，无法执行英文配音混音。");
+  }
+  const editor = await subtitleEditorState(record);
+  if (!editor.canEdit || !editor.complete) {
+    throw new Error("英文字幕尚未在页面中补全并保存，无法开始配音。");
   }
   const missingRequiredInputs = [];
   for (const inputPath of [
@@ -1621,7 +1872,7 @@ async function addReferencePaths(paths) {
 }
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/videos", async (_request, response, next) => {
   try {
@@ -1800,6 +2051,34 @@ app.post("/api/videos/:id/workflow/final-subtitles/run", async (request, respons
       return;
     }
     response.status(202).json(await startFinalSubtitles(video));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/workflow/subtitle-editor", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    response.json(await subtitleEditorState(video));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/videos/:id/workflow/subtitle-editor", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    response.json(await saveSubtitleEditor(video, request.body?.cues));
   } catch (error) {
     next(error);
   }

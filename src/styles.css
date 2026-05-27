@@ -679,6 +679,179 @@ button {
   padding: 10px 12px;
 }
 
+.subtitle-editor-summary {
+  align-items: center;
+  background: #f4f7fc;
+  border: 1px solid #e3eaf5;
+  border-radius: 11px;
+  color: #52627a;
+  display: flex;
+  gap: 22px;
+  margin-bottom: 18px;
+  padding: 12px 15px;
+}
+
+.subtitle-editor-summary strong {
+  color: #22304a;
+  font-size: 15px;
+}
+
+.subtitle-editor-summary span {
+  font-size: 13px;
+}
+
+.bulk-translation-panel {
+  background: #f7f9fc;
+  border: 1px solid #e3e8ef;
+  border-radius: 12px;
+  margin-bottom: 18px;
+  padding: 15px;
+}
+
+.bulk-translation-panel label {
+  color: #263248;
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+
+.bulk-translation-panel p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  margin: 0 0 10px;
+}
+
+.bulk-translation-panel textarea,
+.subtitle-editor-row textarea,
+.subtitle-role-field input {
+  background: #fff;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  color: #273247;
+  font: inherit;
+}
+
+.bulk-translation-panel textarea {
+  display: block;
+  font-size: 13px;
+  line-height: 1.55;
+  margin-bottom: 10px;
+  padding: 10px;
+  resize: vertical;
+  width: 100%;
+}
+
+.bulk-translation-panel textarea:focus,
+.subtitle-editor-row textarea:focus,
+.subtitle-role-field input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.subtitle-editor-table {
+  border: 1px solid #e3e8ef;
+  border-radius: 12px;
+  margin-bottom: 18px;
+  max-height: 720px;
+  overflow: auto;
+}
+
+.subtitle-editor-header,
+.subtitle-editor-row {
+  display: grid;
+  gap: 13px;
+  grid-template-columns: minmax(260px, 1.25fr) minmax(165px, 0.65fr) minmax(300px, 1.35fr);
+  padding: 12px 14px;
+}
+
+.subtitle-editor-header {
+  background: #f4f7fc;
+  border-bottom: 1px solid #e3e8ef;
+  color: #65738a;
+  font-size: 12px;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.subtitle-editor-row {
+  align-items: start;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.subtitle-editor-row:last-child {
+  border-bottom: 0;
+}
+
+.subtitle-source strong {
+  color: #62728a;
+  display: block;
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.subtitle-source p {
+  color: #1f2b40;
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.subtitle-role-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.subtitle-role-field input {
+  font-size: 13px;
+  height: 38px;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.role-apply-button {
+  background: #fff;
+  border: 1px solid #d9e3f2;
+  border-radius: 7px;
+  color: #536681;
+  font-size: 12px;
+  height: 30px;
+}
+
+.role-apply-button:hover {
+  background: var(--accent-soft);
+  border-color: #bed4ff;
+  color: var(--accent);
+}
+
+.subtitle-editor-row textarea {
+  font-size: 13px;
+  line-height: 1.55;
+  min-height: 64px;
+  padding: 9px 10px;
+  resize: vertical;
+  width: 100%;
+}
+
+.subtitle-editor-actions {
+  align-items: end;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+}
+
+.subtitle-editor-actions .track-results,
+.subtitle-editor-actions > div {
+  flex: 1;
+  margin-bottom: 0;
+}
+
 .final-video-step {
   border-color: #d9e4f5;
 }
@@ -904,8 +1077,15 @@ button {
   }
 
   .final-input-results,
-  .style-controls {
+  .style-controls,
+  .subtitle-editor-header,
+  .subtitle-editor-row {
     grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+
+  .subtitle-editor-header span:last-child,
+  .subtitle-editor-row textarea {
+    grid-column: 1 / -1;
   }
 }
 
@@ -1035,8 +1215,17 @@ button {
 
   .final-input-results,
   .style-controls,
-  .preview-grid {
+  .preview-grid,
+  .subtitle-editor-header,
+  .subtitle-editor-row {
     grid-template-columns: 1fr;
+  }
+
+  .subtitle-editor-summary,
+  .subtitle-editor-actions {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
   }
 
   .style-panel-heading {
