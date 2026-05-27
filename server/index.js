@@ -386,6 +386,32 @@ function parseEditableSubtitleDocument(content, label) {
   });
 }
 
+function parseTranslatedSubtitleTextDocument(content, label) {
+  const blocks = content
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .split(/\r?\n\s*\r?\n/)
+    .filter(Boolean);
+  if (blocks.length === 0) {
+    throw new Error(`${label}没有字幕条目。`);
+  }
+  return blocks.map((block, index) => {
+    const lines = block.split(/\r?\n/);
+    const number = Number(lines[0]?.trim());
+    if (!Number.isInteger(number) || number <= 0 || lines.length < 3) {
+      throw new Error(`${label}第 ${index + 1} 段格式无效。`);
+    }
+    if (!lines[1]?.includes("-->")) {
+      throw new Error(`${label}第 ${number} 段缺少 SRT 时间行。`);
+    }
+    const text = lines.slice(2).join("\n").trim();
+    if (!text) {
+      throw new Error(`${label}第 ${number} 段没有字幕正文。`);
+    }
+    return { number, text };
+  });
+}
+
 function subtitleRoleAndText(text) {
   const match = editableSubtitleSpeakerPattern.exec(text.trim());
   if (!match) {
@@ -482,7 +508,7 @@ async function subtitleEditorState(record) {
   } else if (await isFile(paths.translationTarget.srtPath)) {
     try {
       hasSavedTranslation = true;
-      const englishDraft = parseEditableSubtitleDocument(
+      const englishDraft = parseTranslatedSubtitleTextDocument(
         await fs.readFile(paths.translationTarget.srtPath, "utf8"),
         "英文字幕译稿",
       );
@@ -538,7 +564,7 @@ async function importTranslatedSubtitleFile(record) {
     "最终中文字幕",
   );
   validateEditableMasterTimeline(canonical);
-  const translated = parseEditableSubtitleDocument(
+  const translated = parseTranslatedSubtitleTextDocument(
     await fs.readFile(paths.translationTarget.srtPath, "utf8"),
     "英文字幕译稿",
   );
