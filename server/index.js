@@ -494,6 +494,7 @@ async function subtitleEditorState(record) {
     canEdit: true,
     draftError,
     completedEnglishCount: cues.filter((cue) => cue.english).length,
+    missingEnglishNumbers: cues.filter((cue) => !cue.english).map((cue) => cue.number),
     complete: cues.every((cue) => cue.english),
     cues,
   };
@@ -1297,6 +1298,7 @@ async function englishDubbingStatus(record) {
     status,
     canRun,
     editorComplete: Boolean(editor.complete),
+    missingEnglishNumbers: editor.missingEnglishNumbers || [],
     preflightOutdated,
     mixOutdated,
     stage: task?.stage || null,
