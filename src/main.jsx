@@ -39,24 +39,56 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function buildTranslationPrompt(chineseSrtPath, englishSrtPath) {
-  if (!chineseSrtPath || !englishSrtPath) {
+function buildTranslationPrompt(chineseSrtPath, geminiJsonPath) {
+  if (!chineseSrtPath || !geminiJsonPath) {
     return "";
   }
-  return `你是一名专业的影视字幕翻译师。请读取以下中文字幕 SRT 文件，将字幕正文翻译成自然、简洁、适合英文配音的英文，并将结果写入指定英文字幕文件。
+  return `你是一名专业的影视字幕翻译师和英文配音脚本统筹。请读取以下中文字幕 SRT 文件，将字幕正文翻译成自然、简洁、适合英文配音的英文，并将结果写入指定 JSON 文件。
 
 输入文件：
 ${chineseSrtPath}
 
 输出文件：
-${englishSrtPath}
+${geminiJsonPath}
 
 要求：
-1. 输出文件必须保持标准 SRT 格式；除第 4 条允许删除的误识别条目外，与输入文件保持相同的字幕编号、时间码和条目顺序。
-2. 只翻译字幕正文；若正文包含开头的角色标签，例如 [黑猫]，必须原样保留标签，仅翻译其后的台词。
-3. 译文应自然、简洁，适合英文配音，并尽量适配该条字幕时间窗。
-4. 若确认某个 SRT 条目是 OCR 误识别的无效文字，可以在输出文件中删除整个条目。
-5. 不要修改输入文件，不要在输出文件外附加解释、标题或 Markdown 内容。`;
+1. 输出文件必须是纯 JSON，不要输出 Markdown、解释、标题或代码块。
+2. JSON 必须包含 display_subtitles 和 dubbing_groups 两个数组。
+3. display_subtitles 用于画面显示，必须保持输入 SRT 的编号、起止时间、条数和顺序，不得合并、拆分或改动时间轴。
+4. display_subtitles 的 text 只翻译字幕正文；若原文包含开头角色标签，例如 [黑猫]，必须保留角色标签，仅翻译其后的台词。
+5. dubbing_groups 用于后续英文 TTS 配音，可以合并相邻字幕，以减少配音段数并提升表演连贯性。
+6. dubbing_groups 只允许合并同一角色连续台词，不得跨角色合并。
+7. 相邻字幕间隔小于 1 秒，且语义、语气或表演节奏连续时，优先合并。
+8. 极短语气词、承接词、半句，例如 Oh, Uh, Um..., Hmph, Thanks.，应尽量并入同角色前后句。
+9. 每个配音句群总时长建议不超过 7 秒，英文文本建议不超过 220 字符。
+10. 如果角色变化、语义明显转折、停顿超过 1 秒、强情绪独立反应，必须断开。
+11. dubbing_groups 必须完整覆盖所有 display_subtitles，每条显示字幕只能出现一次。
+12. dubbing_groups 的 start 取第一条字幕开始时间，end 取最后一条字幕结束时间。
+13. dubbing_groups 的 text 要适合 TTS 一次性朗读，可在不改变意思的前提下合并标点和轻微润色。
+
+JSON 格式：
+{
+  "display_subtitles": [
+    {
+      "index": 1,
+      "start": "00:00:00,000",
+      "end": "00:00:03,000",
+      "speaker": "角色名或未标注",
+      "text": "[角色名] English display subtitle text"
+    }
+  ],
+  "dubbing_groups": [
+    {
+      "group_id": 1,
+      "subtitle_indices": [1, 2, 3],
+      "start": "00:00:00,000",
+      "end": "00:00:05,800",
+      "speaker": "角色名或未标注",
+      "text": "English TTS text for the merged group.",
+      "merge_reason": "Same speaker, short pause, continuous meaning."
+    }
+  ]
+}`;
 }
 
 function FileResult({ label, file, onOpen, readyText = "已生成", missingText = "未生成" }) {
@@ -445,7 +477,7 @@ function VideoPage({ videos, isLoading }) {
           setTranslationPromptText(
             buildTranslationPrompt(
               finalSubtitles.outputs.srt.path,
-              finalSubtitles.translationTarget.srtPath,
+              finalSubtitles.translationTarget.jsonPath,
             ),
           );
         }
@@ -602,7 +634,7 @@ function VideoPage({ videos, isLoading }) {
     translationPromptText ||
     buildTranslationPrompt(
       finalSubtitles?.outputs?.srt?.path,
-      finalSubtitles?.translationTarget?.srtPath,
+      finalSubtitles?.translationTarget?.jsonPath,
     );
   const missingEnglishDubbingInputs = englishDubbing?.inputs
     ? [
@@ -663,7 +695,7 @@ function VideoPage({ videos, isLoading }) {
     setTranslationPromptText(
       buildTranslationPrompt(
         finalSubtitles?.outputs?.srt?.path,
-        finalSubtitles?.translationTarget?.srtPath,
+        finalSubtitles?.translationTarget?.jsonPath,
       ),
     );
     setSubtitleEditorMessage("已恢复原始 Gemini 提示词。");
@@ -1047,14 +1079,14 @@ function VideoPage({ videos, isLoading }) {
         <div className="workflow-card manual-step">
           <p className="eyebrow">步骤 05</p>
           <h2>角色校对与英文翻译</h2>
-          <p>将最终中文字幕文件交给 Gemini 生成同格式英文 SRT，再读取文件校对角色与译文。时间轴始终固定来自最终中文字幕。</p>
+          <p>将最终中文字幕文件交给 Gemini 生成 JSON：逐条英文显示字幕和配音句群规划。读取后可校对角色与译文，配音阶段会优先按句群减少段数。</p>
           <div className={`step-status ${canTranslate ? "ready" : "blocked"}`}>
             <strong>{canTranslate ? "可以翻译与校对" : "等待最终中文字幕"}</strong>
             <small>
               {canTranslate
                 ? subtitleEditorComplete
                   ? "英文译稿已解析，可继续校对并保存后进入英文配音。"
-                  : "复制提示词交给 Gemini 生成英文 SRT，再读取文件并校对。"
+                  : "复制提示词交给 Gemini 生成 JSON，再读取文件并校对。"
                 : "请先完成步骤 04，生成最终中文字幕 SRT。"}
             </small>
           </div>
@@ -1081,7 +1113,7 @@ function VideoPage({ videos, isLoading }) {
                 <div>
                   <strong>Gemini 文件翻译提示词</strong>
                   <p>
-                    提示词可编辑，要求 Gemini 读取中文字幕 SRT 并输出同格式英文 SRT。复制按钮会复制当前内容。
+                    提示词可编辑，要求 Gemini 读取中文字幕 SRT，并输出包含显示字幕与配音句群的 JSON。复制按钮会复制当前内容。
                   </p>
                 </div>
                 <div className="translation-assistant-actions">
@@ -1117,21 +1149,24 @@ function VideoPage({ videos, isLoading }) {
                     readyText="已就绪"
                   />
                   <FileResult
-                    label="Gemini 输出：英文字幕译稿 SRT"
+                    label="Gemini 输出：翻译与配音句群 JSON"
                     file={{
-                      path: finalSubtitles.translationTarget.srtPath,
-                      ready: finalSubtitles.translationTarget.srtReady,
+                      path: finalSubtitles.translationTarget.jsonPath,
+                      ready: finalSubtitles.translationTarget.jsonReady,
                     }}
                     onOpen={openPath}
                   />
                 </div>
                 <button
                   className="secondary-button compact"
-                  disabled={isImportingTranslationSrt || !finalSubtitles.translationTarget.srtReady}
+                  disabled={
+                    isImportingTranslationSrt ||
+                    (!finalSubtitles.translationTarget.jsonReady && !finalSubtitles.translationTarget.srtReady)
+                  }
                   type="button"
                   onClick={importTranslationSrt}
                 >
-                  {isImportingTranslationSrt ? "正在读取..." : "读取 Gemini 输出 SRT"}
+                  {isImportingTranslationSrt ? "正在读取..." : "读取 Gemini 输出"}
                 </button>
               </section>
               <div className="subtitle-editor-table" role="table" aria-label="字幕翻译与角色校对">
@@ -1174,7 +1209,15 @@ function VideoPage({ videos, isLoading }) {
               {subtitleEditorMessage && <p className="copy-status">{subtitleEditorMessage}</p>}
               <div className="subtitle-editor-actions">
                 <FileResult
-                  label="英文字幕译稿 SRT"
+                  label="Gemini 翻译 JSON"
+                  file={{
+                    path: finalSubtitles.translationTarget.jsonPath,
+                    ready: finalSubtitles.translationTarget.jsonReady,
+                  }}
+                  onOpen={openPath}
+                />
+                <FileResult
+                  label="英文显示字幕 SRT"
                   file={{
                     path: finalSubtitles.translationTarget.srtPath,
                     ready: finalSubtitles.translationTarget.srtReady,
@@ -1213,8 +1256,11 @@ function VideoPage({ videos, isLoading }) {
                 englishDubbing.stage === "preflight" &&
                 "正在预检英文字幕"}
               {englishDubbing?.status === "running" &&
+                englishDubbing.stage === "dubbing-groups" &&
+                "正在规划英文配音句群"}
+              {englishDubbing?.status === "running" &&
                 englishDubbing.stage === "segments" &&
-                "正在切割 DX 对白轨"}
+                "正在按句群切割 DX 对白轨"}
               {englishDubbing?.status === "running" &&
                 englishDubbing.stage === "assets" &&
                 "正在准备 IndexTTS2 资源"}
@@ -1261,6 +1307,8 @@ function VideoPage({ videos, isLoading }) {
             <div className="track-results">
               <FileResult label="受控英文字幕 SRT" file={englishDubbing.outputs.controlledEnglishSrt} onOpen={openPath} />
               <FileResult label="英文字幕预检报告" file={englishDubbing.outputs.preflightReport} onOpen={openPath} />
+              <FileResult label="英文配音句群清单" file={englishDubbing.outputs.dubbingGroupsCsv} onOpen={openPath} />
+              <FileResult label="英文配音句群报告" file={englishDubbing.outputs.dubbingGroupsReport} onOpen={openPath} />
               <FileResult label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
               <FileResult label="英文对白整轨" file={englishDubbing.outputs.dialogueTrack} onOpen={openPath} />
               <FileResult label="英文成片混音 MX+FX" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />

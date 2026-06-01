@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>英文配音句群工作流说明</title>
+  <style>
+    body { max-width: 980px; margin: 32px auto; padding: 0 22px; font-family: "Microsoft YaHei", Arial, sans-serif; color: #111827; line-height: 1.7; }
+    h1, h2 { color: #111827; }
+    pre { background: #0f172a; color: #e5e7eb; padding: 18px; border-radius: 10px; overflow-x: auto; white-space: pre-wrap; }
+    code { font-family: Consolas, monospace; }
+    .note { background: #eff6ff; border-left: 4px solid #2563eb; padding: 12px 16px; margin: 18px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0 24px; }
+    th, td { border: 1px solid #d1d5db; padding: 8px; vertical-align: top; text-align: left; }
+    th { background: #f3f4f6; }
+  </style>
+</head>
+<body>
+  <h1>英文配音句群工作流说明</h1>
+  <div class="note">
+    <p>新流程把“显示字幕”和“配音句群”解耦：显示字幕仍保持逐条 SRT 时间轴；IndexTTS2 配音改用 Gemini 规划或自动规则合并后的句群，减少段数并提升表演连贯性。正式入口统一为 Web UI 和 Express 服务端调度，不再在根目录放业务 PowerShell 入口。</p>
+  </div>
+
+  <h2>阶段关系</h2>
+  <table>
+    <tr><th>阶段</th><th>输入</th><th>输出</th><th>调用位置</th></tr>
+    <tr><td>Gemini 翻译</td><td>最终中文字幕 SRT</td><td><code>display_subtitles</code> 与 <code>dubbing_groups</code> JSON</td><td>UI 步骤 05 生成提示词并读取 JSON。</td></tr>
+    <tr><td>句群规划</td><td>Gemini JSON + 受控英文 SRT</td><td><code>英文配音句群清单.csv</code></td><td><code>server/index.js</code> 调用 <code>scripts/plan_english_dubbing_groups.py</code>。</td></tr>
+    <tr><td>分段切割</td><td>DX 对白轨 + 句群 CSV</td><td><code>英文配音分段清单.csv</code> 与 WAV 参考片段</td><td><code>server/index.js</code> 调用 <code>scripts/split_dubbing_segments.py</code>。</td></tr>
+    <tr><td>IndexTTS2</td><td>分段清单 CSV</td><td><code>IndexTTS2_英文配音清单.csv</code></td><td><code>scripts/indextts2_dubbing_workflow.py</code>。</td></tr>
+    <tr><td>整轨/成片</td><td>IndexTTS2 清单 + 显示字幕 SRT</td><td>英文整轨、混音轨、最终视频</td><td>UI 步骤 06 和步骤 07。</td></tr>
+  </table>
+
+  <h2>推荐运行方式</h2>
+  <pre>npm run dev</pre>
+  <p>进入 <code>http://127.0.0.1:5173/</code> 后按 UI 步骤执行。英文配音句群规划和分段切割已接入“步骤 06 IndexTTS2 英文配音与混音”。</p>
+
+  <h2>核心脚本</h2>
+  <pre>scripts/plan_english_dubbing_groups.py
+scripts/split_dubbing_segments.py</pre>
+  <p>这些脚本保留为服务端工作流的核心实现。需要排查单个阶段时，可以直接调用 Python 脚本；日常流程应通过 UI/API 执行。</p>
+
+  <h2>兼容规则</h2>
+  <p>Gemini JSON 的 <code>dubbing_groups</code> 可以覆盖完整显示字幕。进入配音阶段时，已经跳过的字幕编号会从句群中忽略；如果 Gemini 句群跨角色，会按角色自动拆分，避免不同角色共用同一音色。</p>
+</body>
+</html>

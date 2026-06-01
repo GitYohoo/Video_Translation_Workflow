@@ -7,3 +7,4 @@ data/thumbnails/
 data/logs/
 data/videos.json
 data/*.log
+.dev-logs/

@@ -52,6 +52,11 @@ const controlledEnglishSubtitlesCoreScript = path.join(
   "scripts",
   "prepare_controlled_english_subtitles.py",
 );
+const planEnglishDubbingGroupsScript = path.join(
+  workflowRootDirectory,
+  "scripts",
+  "plan_english_dubbing_groups.py",
+);
 const splitDubbingCoreScript = path.join(workflowRootDirectory, "scripts", "split_dubbing_segments.py");
 const indexTtsCoreScript = path.join(workflowRootDirectory, "scripts", "indextts2_dubbing_workflow.py");
 const indexTtsAssetsScript = path.join(
@@ -219,6 +224,7 @@ function finalSubtitlesOutputPaths(record) {
     srtPath: path.join(outputDirectory, `${videoStem}_最终中文字幕.srt`),
     translationTarget: {
       outputDirectory: translationOutputDirectory,
+      jsonPath: path.join(translationOutputDirectory, `${videoStem}_Gemini翻译与配音句群.json`),
       srtPath: path.join(translationOutputDirectory, `${videoStem}_最终英文字幕.srt`),
       editorDraftPath: path.join(translationOutputDirectory, `${videoStem}_字幕编辑草稿.json`),
     },
@@ -238,16 +244,23 @@ function englishDubbingOutputPaths(record) {
   }
   const videoStem = path.parse(record.sourcePath).name;
   const workDirectory = path.join(finalPaths.translationTarget.outputDirectory, "英文配音分段");
+  const dubbingGroupsDirectory = path.join(finalPaths.translationTarget.outputDirectory, "英文配音句群");
   const dubbingDirectory = path.join(workDirectory, "IndexTTS2_英文配音");
   const assemblyDirectory = path.join(dubbingDirectory, "整轨合成");
   return {
     inputs: {
       chineseTimelineSrt: finalPaths.srtPath,
       englishDraftSrt: finalPaths.translationTarget.srtPath,
+      geminiTranslationJson: finalPaths.translationTarget.jsonPath,
       englishSrt: finalPaths.controlledTarget.srtPath,
       dialogue: separationPaths.dialoguePath,
       background: separationPaths.backgroundPath,
     },
+    dubbingGroupsDirectory,
+    dubbingGroupsCsvPath: path.join(dubbingGroupsDirectory, "英文配音句群清单.csv"),
+    dubbingGroupsJsonPath: path.join(dubbingGroupsDirectory, "英文配音句群清单.json"),
+    dubbingGroupsReportPath: path.join(dubbingGroupsDirectory, "英文配音句群规划.html"),
+    dubbingGroupsDisplaySrtPath: path.join(dubbingGroupsDirectory, "英文显示字幕.srt"),
     workDirectory,
     segmentManifestPath: path.join(workDirectory, "英文配音分段清单.csv"),
     dubbingDirectory,
@@ -412,6 +425,35 @@ function parseTranslatedSubtitleTextDocument(content, label) {
   });
 }
 
+function parseGeminiDisplaySubtitles(content, label) {
+  let payload;
+  try {
+    payload = JSON.parse(content.replace(/^\uFEFF/, ""));
+  } catch (error) {
+    throw new Error(`${label}不是有效 JSON：${error.message}`);
+  }
+  if (!payload || !Array.isArray(payload.display_subtitles) || payload.display_subtitles.length === 0) {
+    throw new Error(`${label}缺少 display_subtitles 数组。`);
+  }
+  return payload.display_subtitles.map((item, index) => {
+    const number = Number(item?.index ?? index + 1);
+    if (!Number.isInteger(number) || number <= 0) {
+      throw new Error(`${label}第 ${index + 1} 条 display_subtitles 编号无效。`);
+    }
+    const rawText = typeof item?.text === "string" ? item.text.trim() : "";
+    const speaker = typeof item?.speaker === "string" ? item.speaker.trim() : "";
+    const parsed = subtitleRoleAndText(rawText);
+    const text = parsed.text || rawText;
+    if (!text) {
+      throw new Error(`${label}第 ${number} 条 display_subtitles 没有英文正文。`);
+    }
+    return {
+      number,
+      text: speaker && !parsed.role ? taggedSubtitleText(speaker, text) : rawText,
+    };
+  });
+}
+
 function subtitleRoleAndText(text) {
   const match = editableSubtitleSpeakerPattern.exec(text.trim());
   if (!match) {
@@ -556,18 +598,27 @@ async function importTranslatedSubtitleFile(record) {
   if (!paths || !(await isFile(paths.srtPath))) {
     throw new Error("请先生成最终中文字幕。");
   }
-  if (!(await isFile(paths.translationTarget.srtPath))) {
-    throw new Error(`找不到 Gemini 输出的英文字幕文件：${paths.translationTarget.srtPath}`);
+  const hasGeminiJson = await isFile(paths.translationTarget.jsonPath);
+  const hasLegacySrt = await isFile(paths.translationTarget.srtPath);
+  if (!hasGeminiJson && !hasLegacySrt) {
+    throw new Error(
+      `找不到 Gemini 输出文件：${paths.translationTarget.jsonPath}；也没有旧版 SRT：${paths.translationTarget.srtPath}`,
+    );
   }
   const canonical = parseEditableSubtitleDocument(
     await fs.readFile(paths.srtPath, "utf8"),
     "最终中文字幕",
   );
   validateEditableMasterTimeline(canonical);
-  const translated = parseTranslatedSubtitleTextDocument(
-    await fs.readFile(paths.translationTarget.srtPath, "utf8"),
-    "英文字幕译稿",
-  );
+  const translated = hasGeminiJson
+    ? parseGeminiDisplaySubtitles(
+        await fs.readFile(paths.translationTarget.jsonPath, "utf8"),
+        "Gemini 翻译 JSON",
+      )
+    : parseTranslatedSubtitleTextDocument(
+        await fs.readFile(paths.translationTarget.srtPath, "utf8"),
+        "英文字幕译稿",
+      );
   const canonicalByNumber = new Map(canonical.map((cue) => [cue.number, cue]));
   const translatedByNumber = new Map();
   for (const cue of translated) {
@@ -584,7 +635,7 @@ async function importTranslatedSubtitleFile(record) {
     JSON.stringify(
       {
         savedAt: new Date().toISOString(),
-        importedFromSrt: paths.translationTarget.srtPath,
+        importedFrom: hasGeminiJson ? paths.translationTarget.jsonPath : paths.translationTarget.srtPath,
         cues: canonical.map((cue) => {
           const english = translatedByNumber.get(cue.number) || "";
           return {
@@ -712,10 +763,16 @@ function knownProjectPaths(record) {
     finalSubtitles?.outputDirectory,
     finalSubtitles?.srtPath,
     finalSubtitles?.translationTarget?.outputDirectory,
+    finalSubtitles?.translationTarget?.jsonPath,
     finalSubtitles?.translationTarget?.srtPath,
     finalSubtitles?.translationTarget?.editorDraftPath,
     finalSubtitles?.controlledTarget?.srtPath,
     finalSubtitles?.controlledTarget?.reportPath,
+    dubbing?.dubbingGroupsDirectory,
+    dubbing?.dubbingGroupsCsvPath,
+    dubbing?.dubbingGroupsJsonPath,
+    dubbing?.dubbingGroupsReportPath,
+    dubbing?.dubbingGroupsDisplaySrtPath,
     dubbing?.workDirectory,
     dubbing?.segmentManifestPath,
     dubbing?.dubbingManifestPath,
@@ -1249,6 +1306,7 @@ async function finalSubtitlesStatus(record) {
     translationTarget: {
       ...paths.translationTarget,
       outputDirectoryReady: await isDirectory(paths.translationTarget.outputDirectory),
+      jsonReady: await isFile(paths.translationTarget.jsonPath),
       srtReady: await isFile(paths.translationTarget.srtPath),
     },
     controlledTarget: {
@@ -1366,6 +1424,9 @@ async function englishDubbingStatus(record) {
     inputs.dialogue.ready &&
     inputs.background.ready;
   const preflightReportReady = await isFile(paths.preflightReportPath);
+  const dubbingGroupsCsvReady = await isFile(paths.dubbingGroupsCsvPath);
+  const dubbingGroupsJsonReady = await isFile(paths.dubbingGroupsJsonPath);
+  const dubbingGroupsReportReady = await isFile(paths.dubbingGroupsReportPath);
   const segmentManifestReady = await isFile(paths.segmentManifestPath);
   const dubbingManifestReady = await isFile(paths.dubbingManifestPath);
   const dubbingReportReady = await isFile(paths.dubbingReportPath);
@@ -1417,6 +1478,9 @@ async function englishDubbingStatus(record) {
     outputs: {
       controlledEnglishSrt: { path: paths.inputs.englishSrt, ready: inputs.englishSrt.ready },
       preflightReport: { path: paths.preflightReportPath, ready: preflightReportReady },
+      dubbingGroupsCsv: { path: paths.dubbingGroupsCsvPath, ready: dubbingGroupsCsvReady },
+      dubbingGroupsJson: { path: paths.dubbingGroupsJsonPath, ready: dubbingGroupsJsonReady },
+      dubbingGroupsReport: { path: paths.dubbingGroupsReportPath, ready: dubbingGroupsReportReady },
       segmentManifest: { path: paths.segmentManifestPath, ready: segmentManifestReady },
       dubbingManifest: { path: paths.dubbingManifestPath, ready: dubbingManifestReady },
       dubbingReport: { path: paths.dubbingReportPath, ready: dubbingReportReady },
@@ -1459,6 +1523,7 @@ async function startEnglishDubbing(record) {
   }
   for (const [label, filePath] of [
     ["英文字幕预检脚本", controlledEnglishSubtitlesCoreScript],
+    ["英文配音句群规划脚本", planEnglishDubbingGroupsScript],
     ["分段切割脚本", splitDubbingCoreScript],
     ["IndexTTS2 配音脚本", indexTtsCoreScript],
     ["IndexTTS2 资源缓存脚本", indexTtsAssetsScript],
@@ -1536,7 +1601,7 @@ async function startEnglishDubbing(record) {
 
   void (async () => {
     try {
-      output.write("步骤 1/4：同步主时间轴并预检英文字幕译稿。\n");
+      output.write("步骤 1/5：同步主时间轴并预检英文字幕译稿。\n");
       await runProcess(
         punctuationPython,
         [
@@ -1553,6 +1618,26 @@ async function startEnglishDubbing(record) {
         commonEnvironment,
       );
       const subtitleStats = await fs.stat(paths.inputs.englishSrt);
+      task.stage = "dubbing-groups";
+      output.write("\n步骤 2/5：生成英文配音句群规划。\n");
+      const groupArguments = [
+        planEnglishDubbingGroupsScript,
+        "--subtitle",
+        paths.inputs.englishSrt,
+        "--output-csv",
+        paths.dubbingGroupsCsvPath,
+        "--output-json",
+        paths.dubbingGroupsJsonPath,
+        "--output-html",
+        paths.dubbingGroupsReportPath,
+        "--output-subtitle",
+        paths.dubbingGroupsDisplaySrtPath,
+      ];
+      if (await isFile(paths.inputs.geminiTranslationJson)) {
+        groupArguments.push("--gemini-json", paths.inputs.geminiTranslationJson);
+      }
+      await runProcess(punctuationPython, groupArguments, commonEnvironment);
+      const dubbingGroupsStats = await fs.stat(paths.dubbingGroupsCsvPath);
       const dialogueStats = await fs.stat(paths.inputs.dialogue);
       const segmentManifestStats = await fs.stat(paths.segmentManifestPath).catch(() => null);
       const dialogueChanged =
@@ -1560,14 +1645,15 @@ async function startEnglishDubbing(record) {
       const regenerateSegments =
         !segmentManifestStats ||
         subtitleStats.mtimeMs > segmentManifestStats.mtimeMs ||
+        dubbingGroupsStats.mtimeMs > segmentManifestStats.mtimeMs ||
         dialogueChanged;
       task.stage = "segments";
-      output.write("\n步骤 2/4：按受控英文 SRT 切割 DX 对白轨。\n");
+      output.write("\n步骤 3/5：按英文配音句群切割 DX 对白轨。\n");
       if (regenerateSegments) {
         const segmentArguments = [
           splitDubbingCoreScript,
-          "--subtitle",
-          paths.inputs.englishSrt,
+          "--dubbing-plan",
+          paths.dubbingGroupsCsvPath,
           "--audio",
           paths.inputs.dialogue,
           "--output-dir",
@@ -1584,7 +1670,7 @@ async function startEnglishDubbing(record) {
       }
 
       task.stage = "assets";
-      output.write("\n步骤 3/4：确认 IndexTTS2 运行资源并生成英文配音。\n");
+      output.write("\n步骤 4/5：确认 IndexTTS2 运行资源并生成英文配音。\n");
       await fs.mkdir(path.dirname(paths.assetsStatePath), { recursive: true });
       try {
         await runProcess(
@@ -1649,7 +1735,7 @@ async function startEnglishDubbing(record) {
       );
 
       task.stage = "mixing";
-      output.write("\n步骤 4/4：铺设英文对白整轨并与 MX+FX 背景底轨混音。\n");
+      output.write("\n步骤 5/5：铺设英文对白整轨并与 MX+FX 背景底轨混音。\n");
       await runProcess(
         punctuationPython,
         [

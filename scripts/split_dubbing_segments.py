@@ -22,16 +22,19 @@ INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 @dataclass(frozen=True)
 class Cue:
     number: int
+    source_numbers: str
     start_ms: int
     end_ms: int
     text: str
     speaker: str
     dialogue: str
+    merge_reason: str = ""
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="按英文 SRT 时间轴切割 DX 对白轨，生成分段配音素材。")
-    parser.add_argument("--subtitle", required=True, help="英文翻译 SRT 文件路径")
+    parser = argparse.ArgumentParser(description="按英文 SRT 或配音句群时间轴切割 DX 对白轨，生成分段配音素材。")
+    parser.add_argument("--subtitle", help="英文翻译 SRT 文件路径")
+    parser.add_argument("--dubbing-plan", help="英文配音句群 CSV；传入后按句群切割而不是逐条字幕")
     parser.add_argument("--audio", required=True, help="DX 对白轨 WAV 文件路径")
     parser.add_argument("--output-dir", required=True, help="英文配音分段输出目录")
     parser.add_argument(
@@ -101,7 +104,7 @@ def load_cues(subtitle_path: Path) -> list[Cue]:
         if not text:
             raise ValueError(f"SRT 第 {number} 段没有配音文本。")
         speaker, dialogue = split_speaker(text)
-        cues.append(Cue(number, start_ms, end_ms, text, speaker, dialogue))
+        cues.append(Cue(number, str(number), start_ms, end_ms, text, speaker, dialogue))
     if not cues:
         raise ValueError("SRT 中没有可切割的字幕段落。")
     for previous, current in zip(cues, cues[1:]):
@@ -109,6 +112,41 @@ def load_cues(subtitle_path: Path) -> list[Cue]:
             raise ValueError(
                 f"SRT 时间顺序错误：第 {current.number} 段早于第 {previous.number} 段开始。"
             )
+    return cues
+
+
+def load_dubbing_plan(plan_path: Path) -> list[Cue]:
+    cues: list[Cue] = []
+    with plan_path.open("r", encoding="utf-8-sig", newline="") as source:
+        for row in csv.DictReader(source):
+            number = int(row["编号"])
+            start_ms = parse_srt_time(row["开始时间"])
+            end_ms = parse_srt_time(row["结束时间"])
+            if end_ms <= start_ms:
+                raise ValueError(f"配音句群第 {number} 段结束时间必须晚于开始时间。")
+            dialogue = row["英文台词"].strip()
+            if not dialogue:
+                raise ValueError(f"配音句群第 {number} 段没有英文台词。")
+            speaker = row.get("说话人", "未标注").strip() or "未标注"
+            source_numbers = row.get("原字幕编号", str(number)).strip() or str(number)
+            merge_reason = row.get("合并原因", "").strip()
+            cues.append(
+                Cue(
+                    number,
+                    source_numbers,
+                    start_ms,
+                    end_ms,
+                    f"[{speaker}] {dialogue}" if speaker != "未标注" else dialogue,
+                    speaker,
+                    dialogue,
+                    merge_reason,
+                )
+            )
+    if not cues:
+        raise ValueError("配音句群 CSV 中没有可切割的段落。")
+    for previous, current in zip(cues, cues[1:]):
+        if current.start_ms < previous.start_ms:
+            raise ValueError(f"配音句群时间顺序错误：第 {current.number} 段早于第 {previous.number} 段。")
     return cues
 
 
@@ -179,17 +217,19 @@ def cut_audio(audio_path: Path, cues: list[Cue], clips_dir: Path) -> tuple[wave.
 def write_csv(output_path: Path, cues: list[Cue], filenames: list[str]) -> None:
     with output_path.open("w", encoding="utf-8-sig", newline="") as output:
         writer = csv.writer(output)
-        writer.writerow(["编号", "开始时间", "结束时间", "时长秒", "说话人", "音频文件", "英文台词"])
+        writer.writerow(["编号", "原字幕编号", "开始时间", "结束时间", "时长秒", "说话人", "音频文件", "英文台词", "合并原因"])
         for cue, filename in zip(cues, filenames):
             writer.writerow(
                 [
                     cue.number,
+                    cue.source_numbers,
                     srt_time(cue.start_ms),
                     srt_time(cue.end_ms),
                     f"{(cue.end_ms - cue.start_ms) / 1000:.3f}",
                     cue.speaker,
                     f"片段/{filename}",
                     cue.dialogue,
+                    cue.merge_reason,
                 ]
             )
 
@@ -207,10 +247,12 @@ def write_html(
         rows.append(
             "<tr>"
             f"<td>{cue.number:03d}</td>"
+            f"<td>{html.escape(cue.source_numbers)}</td>"
             f"<td>{html.escape(cue.speaker)}</td>"
             f"<td>{srt_time(cue.start_ms)} - {srt_time(cue.end_ms)}</td>"
             f"<td>{(cue.end_ms - cue.start_ms) / 1000:.3f}s</td>"
             f"<td>{html.escape(cue.dialogue)}</td>"
+            f"<td>{html.escape(cue.merge_reason)}</td>"
             f'<td><audio controls preload="none" src="片段/{html.escape(filename)}"></audio></td>'
             "</tr>"
         )
@@ -239,11 +281,11 @@ def write_html(
     <p>片段数量：<strong>{len(cues)}</strong></p>
     <p>字幕：<code>{html.escape(str(subtitle_path))}</code></p>
     <p>对白轨：<code>{html.escape(str(audio_path))}</code></p>
-    <p>音频格式：{params.framerate} Hz / {params.nchannels} 声道 / {params.sampwidth * 8} bit PCM；片段严格采用 SRT 起止时间。</p>
+    <p>音频格式：{params.framerate} Hz / {params.nchannels} 声道 / {params.sampwidth * 8} bit PCM；片段严格采用配音清单起止时间。</p>
   </div>
   <table>
     <thead>
-      <tr><th>编号</th><th>说话人</th><th>时间段</th><th>时长</th><th>英文台词</th><th>原对白试听</th></tr>
+      <tr><th>编号</th><th>原字幕编号</th><th>说话人</th><th>时间段</th><th>时长</th><th>英文台词</th><th>合并原因</th><th>原对白试听</th></tr>
     </thead>
     <tbody>
       {''.join(rows)}
@@ -257,23 +299,28 @@ def write_html(
 
 def main() -> int:
     args = parse_args()
-    subtitle_path = Path(args.subtitle).resolve()
+    subtitle_path = Path(args.subtitle).resolve() if args.subtitle else None
     audio_path = Path(args.audio).resolve()
     output_dir = Path(args.output_dir).resolve()
-    if not subtitle_path.is_file():
+    plan_path = Path(args.dubbing_plan).resolve() if args.dubbing_plan else None
+    if not subtitle_path and not plan_path:
+        raise ValueError("必须传入 --subtitle 或 --dubbing-plan。")
+    if subtitle_path and not subtitle_path.is_file():
         raise FileNotFoundError(f"找不到英文字幕：{subtitle_path}")
+    if plan_path and not plan_path.is_file():
+        raise FileNotFoundError(f"找不到英文配音句群清单：{plan_path}")
     if not audio_path.is_file():
         raise FileNotFoundError(f"找不到 DX 对白轨：{audio_path}")
     if args.overwrite and args.update:
         raise ValueError("--overwrite 与 --update 不能同时使用。")
 
-    cues = load_cues(subtitle_path)
+    cues = load_dubbing_plan(plan_path) if plan_path else load_cues(subtitle_path)
     clips_dir = prepare_output(output_dir, args.overwrite, args.update)
     params, filenames = cut_audio(audio_path, cues, clips_dir)
     write_csv(output_dir / "英文配音分段清单.csv", cues, filenames)
     write_html(
         output_dir / "英文配音分段清单.html",
-        subtitle_path,
+        plan_path or subtitle_path,
         audio_path,
         cues,
         filenames,

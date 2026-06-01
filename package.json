@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"node server/index.js\"",
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\ensure_dev_ports_free.ps1 && concurrently \"vite\" \"node server/index.js\"",
     "build": "vite build",
     "start": "node server/index.js"
   },
