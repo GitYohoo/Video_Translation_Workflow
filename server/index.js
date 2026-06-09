@@ -98,6 +98,7 @@ const {
   finalSubtitlesOutputPaths,
   englishDubbingOutputPaths,
   finalVideoOutputPaths,
+  artifactPathForKey,
   knownProjectPaths,
 } = projectPathResolver;
 const port = Number(process.env.PORT || 3001);
@@ -717,6 +718,14 @@ async function openProjectPath(record, requestedPath) {
     windowsHide: true,
   });
   child.unref();
+}
+
+async function openProjectArtifact(record, requestedArtifactKey) {
+  if (!requestedArtifactKey || typeof requestedArtifactKey !== "string") {
+    throw new Error("缺少需要打开的项目产物。");
+  }
+  const artifactPath = artifactPathForKey(record, requestedArtifactKey);
+  await openProjectPath(record, artifactPath);
 }
 
 function thumbnailPath(record) {
@@ -2145,6 +2154,21 @@ app.post("/api/videos/:id/open-path", async (request, response, next) => {
       return;
     }
     await openProjectPath(video, request.body?.path);
+    response.sendStatus(204);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/open-artifact", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    await openProjectArtifact(video, request.body?.artifactKey);
     response.sendStatus(204);
   } catch (error) {
     next(error);

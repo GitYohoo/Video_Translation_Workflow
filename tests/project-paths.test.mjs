@@ -36,6 +36,16 @@ test("looks up artifacts by key and rejects unknown keys", () => {
   );
 });
 
+test("resolves artifact paths for open actions", () => {
+  const videoPath = resolver.artifactPathForKey(record, "finalVideo.video");
+
+  assert.match(videoPath, /示例视频_英文配音_内嵌英文字幕\.mp4$/);
+  assert.throws(
+    () => resolver.artifactPathForKey(record, "not.real"),
+    /未知项目产物/,
+  );
+});
+
 test("keeps legacy copied videos addressable through upload directory", () => {
   const legacyRecord = {
     id: "legacy-1",

@@ -237,6 +237,10 @@ export function createProjectPathResolver({ uploadDirectory }) {
     return artifact;
   }
 
+  function artifactPathForKey(record, key) {
+    return artifactForKey(record, key).path;
+  }
+
   function knownProjectPaths(record) {
     return new Set(
       Object.values(projectArtifacts(record)).map((artifact) =>
@@ -255,6 +259,7 @@ export function createProjectPathResolver({ uploadDirectory }) {
     finalVideoOutputPaths,
     projectArtifacts,
     artifactForKey,
+    artifactPathForKey,
     knownProjectPaths,
   };
 }
