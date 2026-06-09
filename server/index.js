@@ -148,6 +148,7 @@ const activeWhisperxTasks = new Map();
 const activeFinalSubtitlesTasks = new Map();
 const activeEnglishDubbingTasks = new Map();
 const activeFinalVideoTasks = new Map();
+const OCR_SUBTITLES_WORKFLOW = "ocr-subtitles";
 const finalVideoStyles = new Map();
 const catalogStore = createCatalogStore(catalogPath);
 const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
@@ -920,7 +921,9 @@ async function ocrStatus(record) {
       error: "该项目没有可执行的原视频路径。",
     };
   }
-  const task = activeOcrTasks.get(record.id);
+  const activeTask = activeOcrTasks.get(record.id);
+  const persistedJob = await jobStore.readJob(jobIdFor(record.id, OCR_SUBTITLES_WORKFLOW));
+  const task = recoverWorkflowTask(activeTask, persistedJob);
   const srtReady = await isFile(outputs.srtPath);
   const reportReady = await isFile(outputs.reportPath);
   let status = "ready";
@@ -968,10 +971,17 @@ async function startOcr(record) {
   await fs.mkdir(bsRoformerTempDirectory, { recursive: true });
   const logPath = path.join(logDirectory, `${record.id}_OCR_字幕校准.log`);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
-  const task = {
-    status: "running",
+  const job = await jobStore.startJob({
+    videoId: record.id,
+    workflow: OCR_SUBTITLES_WORKFLOW,
+    logPath,
     stage: "ocr",
-    startedAt: new Date().toISOString(),
+  });
+  const task = {
+    id: job.id,
+    status: "running",
+    stage: job.stage,
+    startedAt: job.startedAt,
     finishedAt: null,
     logPath,
     error: null,
@@ -1002,15 +1012,25 @@ async function startOcr(record) {
     PATH: `${torchLibraryDirectory};${process.env.PATH || ""}`,
   };
 
-  function fail(message) {
+  async function fail(message) {
+    if (task.status === "failed") {
+      return;
+    }
     task.status = "failed";
     task.error = message;
     task.finishedAt = new Date().toISOString();
-    output.end(`\n任务状态：failed\n${message}\n`);
+    try {
+      await jobStore.failJob(task.id, message, { stage: task.stage });
+    } catch (error) {
+      output.write(`\n写入任务状态失败：${error.message}\n`);
+    } finally {
+      output.end(`\n任务状态：failed\n${message}\n`);
+    }
   }
 
-  function runPunctuation() {
+  async function runPunctuation() {
     task.stage = "punctuation";
+    await jobStore.updateJob(task.id, { stage: "punctuation" });
     output.write("\n开始 FunASR 标点恢复...\n");
     const punctuationProcess = spawn(
       punctuationPython,
@@ -1019,19 +1039,27 @@ async function startOcr(record) {
     );
     punctuationProcess.stdout.pipe(output, { end: false });
     punctuationProcess.stderr.pipe(output, { end: false });
-    punctuationProcess.on("error", (error) => fail(`FunASR 启动失败：${error.message}`));
-    punctuationProcess.on("close", (code) => {
+    punctuationProcess.on("error", (error) => {
+      void fail(`FunASR 启动失败：${error.message}`);
+    });
+    punctuationProcess.on("close", async (code) => {
       if (task.status === "failed") {
         return;
       }
       if (code !== 0) {
-        fail(`FunASR 标点恢复退出码：${code}`);
+        void fail(`FunASR 标点恢复退出码：${code}`);
         return;
       }
       task.status = "completed";
       task.stage = "completed";
       task.finishedAt = new Date().toISOString();
-      output.end("\n任务状态：completed\n");
+      try {
+        await jobStore.finishJob(task.id, "completed", { stage: "completed" });
+      } catch (error) {
+        output.write(`\n写入任务状态失败：${error.message}\n`);
+      } finally {
+        output.end("\n任务状态：completed\n");
+      }
     });
   }
 
@@ -1056,16 +1084,20 @@ async function startOcr(record) {
   );
   ocrProcess.stdout.pipe(output, { end: false });
   ocrProcess.stderr.pipe(output, { end: false });
-  ocrProcess.on("error", (error) => fail(`GPU OCR 启动失败：${error.message}`));
+  ocrProcess.on("error", (error) => {
+    void fail(`GPU OCR 启动失败：${error.message}`);
+  });
   ocrProcess.on("close", (code) => {
     if (task.status === "failed") {
       return;
     }
     if (code !== 0) {
-      fail(`GPU OCR 提取退出码：${code}`);
+      void fail(`GPU OCR 提取退出码：${code}`);
       return;
     }
-    runPunctuation();
+    void runPunctuation().catch((error) => {
+      void fail(`FunASR 标点恢复启动失败：${error.message}`);
+    });
   });
   return ocrStatus(record);
 }

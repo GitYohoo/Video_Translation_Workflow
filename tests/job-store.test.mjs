@@ -44,6 +44,21 @@ test("persists running and completed job state", async () => {
   assert.equal((await store.readJob(running.id)).status, "completed");
 });
 
+test("persists stage updates for running jobs", async () => {
+  const { store } = await temporaryJobStore();
+  const running = await store.startJob({
+    videoId: "video-3",
+    workflow: "ocr-subtitles",
+    stage: "ocr",
+  });
+
+  const updated = await store.updateJob(running.id, { stage: "punctuation" });
+
+  assert.equal(updated.status, "running");
+  assert.equal(updated.stage, "punctuation");
+  assert.equal((await store.readJob(running.id)).stage, "punctuation");
+});
+
 test("persists failed job state with error text", async () => {
   const { store } = await temporaryJobStore();
   const running = await store.startJob({ videoId: "video-2", workflow: "ocr" });

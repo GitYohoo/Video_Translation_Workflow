@@ -47,6 +47,14 @@ export function createJobStore(jobDirectory) {
     });
   }
 
+  async function updateJob(jobId, updates) {
+    const existing = (await readJob(jobId)) || { id: jobId };
+    return writeJob({
+      ...existing,
+      ...updates,
+    });
+  }
+
   async function finishJob(jobId, status = "completed", updates = {}) {
     const existing = (await readJob(jobId)) || { id: jobId };
     return writeJob({
@@ -70,6 +78,7 @@ export function createJobStore(jobDirectory) {
     readJob,
     writeJob,
     startJob,
+    updateJob,
     finishJob,
     failJob,
   };
