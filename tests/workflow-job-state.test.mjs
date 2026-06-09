@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { recoverWorkflowTask } from "../server/workflow-job-state.js";
+import { activeTaskFromJob, recoverWorkflowTask } from "../server/workflow-job-state.js";
 
 test("prefers active in-memory task over persisted job", () => {
   const task = recoverWorkflowTask(
@@ -37,4 +37,26 @@ test("marks persisted running jobs as interrupted after restart", () => {
 
 test("returns null when no task exists", () => {
   assert.equal(recoverWorkflowTask(null, null), null);
+});
+
+test("builds active task state from a persisted running job", () => {
+  const task = activeTaskFromJob({
+    id: "video-1_whisperx-speakers",
+    status: "running",
+    stage: "alignment",
+    startedAt: "start",
+    finishedAt: null,
+    logPath: "D:\\logs\\whisperx.log",
+    error: null,
+  });
+
+  assert.deepEqual(task, {
+    id: "video-1_whisperx-speakers",
+    status: "running",
+    stage: "alignment",
+    startedAt: "start",
+    finishedAt: null,
+    logPath: "D:\\logs\\whisperx.log",
+    error: null,
+  });
 });

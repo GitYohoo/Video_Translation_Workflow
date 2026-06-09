@@ -12,7 +12,7 @@ import {
   projectWorkspaceDirectory,
 } from "./project-paths.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
-import { recoverWorkflowTask } from "./workflow-job-state.js";
+import { activeTaskFromJob, recoverWorkflowTask } from "./workflow-job-state.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(serverDirectory, "..");
@@ -149,6 +149,7 @@ const activeFinalSubtitlesTasks = new Map();
 const activeEnglishDubbingTasks = new Map();
 const activeFinalVideoTasks = new Map();
 const OCR_SUBTITLES_WORKFLOW = "ocr-subtitles";
+const WHISPERX_SPEAKERS_WORKFLOW = "whisperx-speakers";
 const finalVideoStyles = new Map();
 const catalogStore = createCatalogStore(catalogPath);
 const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
@@ -1111,7 +1112,9 @@ async function whisperxStatus(record) {
       error: "该项目没有可执行的原视频路径。",
     };
   }
-  const task = activeWhisperxTasks.get(record.id);
+  const activeTask = activeWhisperxTasks.get(record.id);
+  const persistedJob = await jobStore.readJob(jobIdFor(record.id, WHISPERX_SPEAKERS_WORKFLOW));
+  const task = recoverWorkflowTask(activeTask, persistedJob);
   const dialogueReady = await isFile(outputs.inputPath);
   const srtReady = await isFile(outputs.srtPath);
   const jsonReady = await isFile(outputs.jsonPath);
@@ -1166,6 +1169,30 @@ async function startWhisperx(record) {
   await fs.mkdir(whisperxModelDirectory, { recursive: true });
   const logPath = path.join(logDirectory, `${record.id}_WhisperX_说话人字幕.log`);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
+  const job = await jobStore.startJob({
+    videoId: record.id,
+    workflow: WHISPERX_SPEAKERS_WORKFLOW,
+    logPath,
+  });
+  const task = activeTaskFromJob(job);
+  activeWhisperxTasks.set(record.id, task);
+
+  async function fail(message) {
+    if (task.status === "failed") {
+      return;
+    }
+    task.status = "failed";
+    task.error = message;
+    task.finishedAt = new Date().toISOString();
+    try {
+      await jobStore.failJob(task.id, message);
+    } catch (error) {
+      output.write(`\n写入任务状态失败：${error.message}\n`);
+    } finally {
+      output.end(`\n任务状态：failed\n${message}\n`);
+    }
+  }
+
   const child = spawn(
     whisperxPython,
     [
@@ -1198,29 +1225,29 @@ async function startWhisperx(record) {
       },
     },
   );
-  const task = {
-    status: "running",
-    startedAt: new Date().toISOString(),
-    finishedAt: null,
-    logPath,
-    error: null,
-  };
-  activeWhisperxTasks.set(record.id, task);
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
   child.on("error", (error) => {
-    task.status = "failed";
-    task.error = `WhisperX 启动失败：${error.message}`;
-    task.finishedAt = new Date().toISOString();
-    output.end(`\n任务状态：failed\n${task.error}\n`);
+    void fail(`WhisperX 启动失败：${error.message}`);
   });
-  child.on("close", (code) => {
-    if (task.status !== "failed") {
-      task.status = code === 0 ? "completed" : "failed";
-      task.error = code === 0 ? null : `WhisperX 处理退出码：${code}`;
-      task.finishedAt = new Date().toISOString();
+  child.on("close", async (code) => {
+    if (task.status === "failed") {
+      return;
     }
-    output.end(`\n任务状态：${task.status}\n`);
+    if (code !== 0) {
+      void fail(`WhisperX 处理退出码：${code}`);
+      return;
+    }
+    task.status = "completed";
+    task.error = null;
+    task.finishedAt = new Date().toISOString();
+    try {
+      await jobStore.finishJob(task.id, "completed");
+    } catch (error) {
+      output.write(`\n写入任务状态失败：${error.message}\n`);
+    } finally {
+      output.end(`\n任务状态：${task.status}\n`);
+    }
   });
   return whisperxStatus(record);
 }
