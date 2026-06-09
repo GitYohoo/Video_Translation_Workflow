@@ -1,6 +1,22 @@
 import path from "node:path";
 
+const unsafePathCharacters = /[<>:"/\\|?*\u0000-\u001F]/g;
+
+function outputRootDirectory(record) {
+  return record.workspaceDirectory || path.dirname(record.sourcePath);
+}
+
+export function projectWorkspaceDirectory(sourcePath, id, workspaceRootDirectory) {
+  const sourceStem = path.parse(sourcePath).name || "video";
+  const safeStem = sourceStem.replace(unsafePathCharacters, "_").trim() || "video";
+  const shortId = String(id || "").replace(/-/g, "").slice(0, 8) || "project";
+  return path.join(workspaceRootDirectory, `${safeStem}_${shortId}`);
+}
+
 function fileArtifact(key, label, filePath) {
+  if (!filePath) {
+    return null;
+  }
   return {
     key,
     label,
@@ -11,6 +27,9 @@ function fileArtifact(key, label, filePath) {
 }
 
 function directoryArtifact(key, label, directoryPath) {
+  if (!directoryPath) {
+    return null;
+  }
   return {
     key,
     label,
@@ -30,7 +49,7 @@ export function createProjectPathResolver({ uploadDirectory }) {
       return null;
     }
     const videoStem = path.parse(record.sourcePath).name;
-    const outputDirectory = path.join(path.dirname(record.sourcePath), "BS-RoFormer_二轨分离");
+    const outputDirectory = path.join(outputRootDirectory(record), "BS-RoFormer_二轨分离");
     const audioDirectory = path.join(outputDirectory, "输出音轨");
     return {
       outputDirectory,
@@ -44,7 +63,7 @@ export function createProjectPathResolver({ uploadDirectory }) {
       return null;
     }
     const videoStem = path.parse(record.sourcePath).name;
-    const outputDirectory = path.join(path.dirname(record.sourcePath), "OCR_字幕校准");
+    const outputDirectory = path.join(outputRootDirectory(record), "OCR_字幕校准");
     return {
       outputDirectory,
       dataPath: path.join(outputDirectory, `${videoStem}_OCR_字幕数据.json`),
@@ -76,9 +95,10 @@ export function createProjectPathResolver({ uploadDirectory }) {
       return null;
     }
     const videoStem = path.parse(record.sourcePath).name;
-    const outputDirectory = path.join(path.dirname(record.sourcePath), "最终中文字幕");
+    const outputRoot = outputRootDirectory(record);
+    const outputDirectory = path.join(outputRoot, "最终中文字幕");
     const translationOutputDirectory = path.join(
-      path.dirname(record.sourcePath),
+      outputRoot,
       `${videoStem}_英文翻译字幕`,
     );
     return {
@@ -148,7 +168,7 @@ export function createProjectPathResolver({ uploadDirectory }) {
       return null;
     }
     const videoStem = path.parse(record.sourcePath).name;
-    const outputDirectory = path.dirname(record.sourcePath);
+    const outputDirectory = outputRootDirectory(record);
     const prefix = `${videoStem}_英文配音`;
     return {
       inputs: {
@@ -185,6 +205,7 @@ export function createProjectPathResolver({ uploadDirectory }) {
     };
 
     add(fileArtifact("source.video", "原视频", record.sourcePath));
+    add(directoryArtifact("project.workspaceDirectory", "项目工作目录", record.workspaceDirectory));
     add(directoryArtifact("bsRoformer.outputDirectory", "BS-RoFormer 输出目录", separation?.outputDirectory));
     add(fileArtifact("bsRoformer.dialogue", "DX 对白轨", separation?.dialoguePath));
     add(fileArtifact("bsRoformer.background", "MX+FX 背景底轨", separation?.backgroundPath));

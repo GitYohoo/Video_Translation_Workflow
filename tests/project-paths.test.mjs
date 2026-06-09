@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProjectPathResolver } from "../server/project-paths.js";
+import {
+  createProjectPathResolver,
+  projectWorkspaceDirectory,
+} from "../server/project-paths.js";
+import {
+  defaultRuntimeSettings,
+  normalizeRuntimeSettings,
+} from "../server/runtime-settings.js";
 import { pathLeafName, artifactDisplayName } from "../src/path-display.js";
 
 const resolver = createProjectPathResolver({
@@ -70,4 +77,47 @@ test("formats path leaves for compact artifact display", () => {
   assert.equal(artifactDisplayName({ displayName: "已计算名称.mp4", path: "D:\\x\\y.mp4" }), "已计算名称.mp4");
   assert.equal(artifactDisplayName({ path: "D:\\x\\y.mp4" }), "y.mp4");
   assert.equal(artifactDisplayName(null), "");
+});
+
+test("uses project workspace directory for new project outputs", () => {
+  const workspaceRecord = {
+    ...record,
+    id: "workspace-video",
+    workspaceDirectory: "D:\\VideoTranslationProjects\\示例视频_workspace",
+  };
+
+  assert.equal(
+    resolver.bsRoformerOutputPaths(workspaceRecord).outputDirectory,
+    "D:\\VideoTranslationProjects\\示例视频_workspace\\BS-RoFormer_二轨分离",
+  );
+  assert.equal(
+    resolver.finalVideoOutputPaths(workspaceRecord).outputDirectory,
+    "D:\\VideoTranslationProjects\\示例视频_workspace",
+  );
+  assert.equal(
+    resolver.bsRoformerOutputPaths(record).outputDirectory,
+    "D:\\素材库\\短剧\\第一集\\BS-RoFormer_二轨分离",
+  );
+});
+
+test("builds safe D drive project workspace directories", () => {
+  assert.equal(
+    projectWorkspaceDirectory(
+      "D:\\素材库\\短剧\\第一集\\A:B*测试?.mp4",
+      "12345678-90ab-cdef-1234-567890abcdef",
+      "D:\\VideoTranslationProjects",
+    ),
+    "D:\\VideoTranslationProjects\\A_B_测试__12345678",
+  );
+});
+
+test("normalizes runtime settings with D drive defaults and overrides", () => {
+  const settings = normalizeRuntimeSettings({
+    projectWorkspaceRoot: "D:\\Projects",
+    voxCpmPython: "D:\\Python\\python.exe",
+  });
+
+  assert.equal(settings.projectWorkspaceRoot, "D:\\Projects");
+  assert.equal(settings.voxCpmPython, "D:\\Python\\python.exe");
+  assert.equal(settings.voxCpmTempDirectory, defaultRuntimeSettings.voxCpmTempDirectory);
 });

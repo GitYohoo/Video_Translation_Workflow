@@ -5,7 +5,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
-import { createProjectPathResolver } from "./project-paths.js";
+import {
+  createProjectPathResolver,
+  projectWorkspaceDirectory,
+} from "./project-paths.js";
+import { loadRuntimeSettings } from "./runtime-settings.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(serverDirectory, "..");
@@ -14,8 +18,10 @@ const uploadDirectory = path.join(dataDirectory, "uploads");
 const thumbnailDirectory = path.join(dataDirectory, "thumbnails");
 const logDirectory = path.join(dataDirectory, "logs");
 const catalogPath = path.join(dataDirectory, "videos.json");
+const settingsPath = path.join(dataDirectory, "settings.json");
 const distDirectory = path.join(projectDirectory, "dist");
 const workflowRootDirectory = projectDirectory;
+const runtimeSettings = await loadRuntimeSettings(settingsPath);
 const bsRoformerRuntimeDirectory = path.join(workflowRootDirectory, ".runtime");
 const bsRoformerCoreScript = path.join(workflowRootDirectory, "scripts", "bs_roformer_refinement.py");
 const bsRoformerPython = path.join(
@@ -70,11 +76,11 @@ const renderEnglishVideoScript = path.join(
   "scripts",
   "render_english_dub_video.py",
 );
-const voxCpmPython = "D:\\models\\indextts2-venv\\Scripts\\python.exe";
+const voxCpmPython = runtimeSettings.voxCpmPython;
 const voxCpmModelId = "openbmb/VoxCPM2";
-const voxCpmTempDirectory = "D:\\Temp\\VoxCPMRuntime";
+const voxCpmTempDirectory = runtimeSettings.voxCpmTempDirectory;
 const whisperxModelDirectory = path.join(bsRoformerRuntimeDirectory, "whisperx-models");
-const whisperxTokenPath = "D:\\models\\huggingface\\token";
+const whisperxTokenPath = runtimeSettings.whisperxTokenPath;
 const ffmpegDirectory = path.join(
   bsRoformerRuntimeDirectory,
   "ffmpeg",
@@ -2067,10 +2073,16 @@ async function buildReferenceRecord(sourcePath) {
   if (!stats.isFile()) {
     throw new Error(`不是有效的视频文件：${resolvedPath}`);
   }
+  const id = crypto.randomUUID();
   return {
-    id: crypto.randomUUID(),
+    id,
     name: path.basename(resolvedPath),
     sourcePath: resolvedPath,
+    workspaceDirectory: projectWorkspaceDirectory(
+      resolvedPath,
+      id,
+      runtimeSettings.projectWorkspaceRoot,
+    ),
     size: stats.size,
     type: videoMimeTypes.get(extension),
     createdAt: Date.now(),
@@ -2102,6 +2114,13 @@ async function addReferencePaths(paths) {
     if (legacyCopy) {
       legacyFilesToDelete.push(path.join(uploadDirectory, legacyCopy.fileName));
       legacyCopy.sourcePath = incoming.sourcePath;
+      legacyCopy.workspaceDirectory =
+        legacyCopy.workspaceDirectory ||
+        projectWorkspaceDirectory(
+          incoming.sourcePath,
+          legacyCopy.id,
+          runtimeSettings.projectWorkspaceRoot,
+        );
       legacyCopy.type = incoming.type;
       delete legacyCopy.fileName;
       created.push(legacyCopy);
