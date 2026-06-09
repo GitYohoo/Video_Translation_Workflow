@@ -568,9 +568,10 @@ button {
   overflow-wrap: anywhere;
 }
 
-.output-root {
+.result-line {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 17px;
   min-width: 0;
@@ -583,14 +584,13 @@ button {
   flex: none;
 }
 
-.output-root code,
-.track-results code {
+.artifact-name,
+.artifact-full-path {
   background: #f7f9fc;
   border-radius: 8px;
   color: #435069;
   display: block;
   flex: 1;
-  font-family: Consolas, "Microsoft YaHei UI", monospace;
   font-size: 12px;
   line-height: 1.55;
   min-width: 0;
@@ -600,8 +600,19 @@ button {
   white-space: nowrap;
 }
 
-.output-root code.empty-path,
-.track-results code.empty-path {
+.artifact-name {
+  font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  font-weight: 600;
+}
+
+.artifact-full-path {
+  flex: 0 0 100%;
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.artifact-name.empty-path {
   color: #9aa5b5;
 }
 
@@ -616,6 +627,7 @@ button {
   margin-top: 18px;
 }
 
+.workflow-card > .result-line,
 .track-results > div {
   align-items: center;
   border: 1px solid #edf1f6;
@@ -624,6 +636,14 @@ button {
   gap: 10px;
   min-width: 0;
   padding: 10px;
+}
+
+.workflow-card > .result-line {
+  margin-bottom: 17px;
+}
+
+.track-results > div {
+  margin-bottom: 0;
 }
 
 .track-results strong {
@@ -640,6 +660,7 @@ button {
   align-items: center;
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   gap: 9px;
   margin-left: auto;
 }
@@ -661,6 +682,7 @@ button {
   font-weight: 600;
   height: 28px;
   line-height: 26px;
+  min-width: 52px;
   padding: 0 11px;
 }
 
@@ -1340,6 +1362,20 @@ button {
 
   .workflow-card h2 {
     font-size: 18px;
+  }
+
+  .result-line {
+    align-items: stretch;
+  }
+
+  .artifact-name,
+  .result-actions {
+    flex: 0 0 100%;
+  }
+
+  .result-actions {
+    justify-content: flex-start;
+    margin-left: 0;
   }
 
   .final-input-results,

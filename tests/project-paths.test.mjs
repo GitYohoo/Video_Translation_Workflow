@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createProjectPathResolver } from "../server/project-paths.js";
+import { pathLeafName, artifactDisplayName } from "../src/path-display.js";
 
 const resolver = createProjectPathResolver({
   uploadDirectory: "D:\\VideoTranslationWorkflow\\data\\uploads",
@@ -61,4 +62,12 @@ test("keeps legacy copied videos addressable through upload directory", () => {
     "D:\\VideoTranslationWorkflow\\data\\uploads\\stored-video.mp4",
   );
   assert.deepEqual(resolver.projectArtifacts(legacyRecord), {});
+});
+
+test("formats path leaves for compact artifact display", () => {
+  assert.equal(pathLeafName("D:\\素材库\\短剧\\第一集\\示例视频.mp4"), "示例视频.mp4");
+  assert.equal(pathLeafName("D:\\素材库\\短剧\\第一集\\"), "第一集");
+  assert.equal(artifactDisplayName({ displayName: "已计算名称.mp4", path: "D:\\x\\y.mp4" }), "已计算名称.mp4");
+  assert.equal(artifactDisplayName({ path: "D:\\x\\y.mp4" }), "y.mp4");
+  assert.equal(artifactDisplayName(null), "");
 });

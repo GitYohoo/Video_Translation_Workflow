@@ -9,6 +9,7 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
+import { artifactDisplayName } from "./path-display.js";
 import "./styles.css";
 
 const defaultFinalVideoStyle = {
@@ -94,37 +95,101 @@ JSON 格式：
 }`;
 }
 
-function FileResult({ label, file, onOpen, readyText = "已生成", missingText = "未生成" }) {
+function FileResult({
+  label,
+  file,
+  artifactKey,
+  onOpen,
+  readyText = "已生成",
+  missingText = "待生成",
+}) {
   const ready = Boolean(file?.ready);
-  const displayPath = ready ? file.path : "未生成";
+  const [expanded, setExpanded] = useState(false);
+  const [copyState, setCopyState] = useState("");
+  const fullPath = ready ? file.path : "";
+  const displayName = ready ? artifactDisplayName(file) : "未生成";
+  const openKey = artifactKey || file?.artifactKey;
+
+  const copyPathWithTextarea = () => {
+    const textarea = document.createElement("textarea");
+    textarea.value = fullPath;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    if (!copied) {
+      throw new Error("copy command failed");
+    }
+  };
+
+  const copyPath = async () => {
+    if (!fullPath) {
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(fullPath);
+        } catch {
+          copyPathWithTextarea();
+        }
+      } else {
+        copyPathWithTextarea();
+      }
+      setCopyState("已复制");
+      window.setTimeout(() => setCopyState(""), 1200);
+    } catch {
+      setCopyState("复制失败");
+      window.setTimeout(() => setCopyState(""), 1600);
+    }
+  };
+
   return (
     <div className={`result-line ${ready ? "ready" : ""}`}>
       <strong className="result-label">{label}</strong>
-      <code className={ready ? "" : "empty-path"} title={displayPath}>{displayPath}</code>
+      <span className={`artifact-name ${ready ? "" : "empty-path"}`} title={fullPath || displayName}>
+        {displayName}
+      </span>
       <span className="result-actions">
         <small>{ready ? readyText : missingText}</small>
-        {ready && (
-          <button className="open-path-button" type="button" onClick={() => onOpen(file.path)}>
+        {ready && openKey && (
+          <button className="open-path-button" type="button" onClick={() => onOpen(openKey)}>
             打开
           </button>
         )}
+        {ready && (
+          <>
+            <button className="open-path-button" type="button" onClick={copyPath}>
+              {copyState || "复制路径"}
+            </button>
+            <button
+              className="open-path-button"
+              type="button"
+              onClick={() => setExpanded((current) => !current)}
+            >
+              {expanded ? "收起路径" : "显示路径"}
+            </button>
+          </>
+        )}
       </span>
+      {ready && expanded && <code className="artifact-full-path">{fullPath}</code>}
     </div>
   );
 }
 
-function DirectoryResult({ label, path, ready, onOpen }) {
-  const displayPath = ready ? path : "未生成";
+function DirectoryResult({ label, directory, path, ready, artifactKey, onOpen }) {
+  const artifact = directory || { path, ready };
   return (
-    <div className={`output-root result-line ${ready ? "ready" : ""}`}>
-      <strong className="result-label">{label}</strong>
-      <code className={ready ? "" : "empty-path"} title={displayPath}>{displayPath}</code>
-      {ready && (
-        <button className="open-path-button" type="button" onClick={() => onOpen(path)}>
-          打开
-        </button>
-      )}
-    </div>
+    <FileResult
+      artifactKey={artifactKey || artifact.artifactKey}
+      file={artifact}
+      label={label}
+      onOpen={onOpen}
+      readyText="已就绪"
+    />
   );
 }
 
@@ -885,13 +950,13 @@ function VideoPage({ videos, isLoading }) {
     }
   };
 
-  const openPath = async (targetPath) => {
+  const openPath = async (artifactKey) => {
     setOpenPathError("");
     try {
-      await requestJson(`/api/videos/${record.id}/open-path`, {
+      await requestJson(`/api/videos/${record.id}/open-artifact`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: targetPath }),
+        body: JSON.stringify({ artifactKey }),
       });
     } catch (error) {
       setOpenPathError(error.message);
@@ -904,6 +969,9 @@ function VideoPage({ videos, isLoading }) {
   if (!record) {
     return <main className="detail-page loading">正在加载视频项目...</main>;
   }
+  const sourceDisplayName = record.sourcePath
+    ? artifactDisplayName({ path: record.sourcePath })
+    : "未记录原视频路径，请重新添加原视频以执行工作流。";
 
   return (
     <main className="detail-page">
@@ -915,8 +983,11 @@ function VideoPage({ videos, isLoading }) {
             {formatSize(record.size)} · {record.type || "视频文件"} ·
             {record.storageMode === "reference" ? " 原路径引用" : " 旧版复制记录"}
           </p>
-          <p className={`project-path ${record.sourcePath ? "" : "warning"}`}>
-            {record.sourcePath || "未记录原视频路径，请重新添加原视频以执行工作流。"}
+          <p
+            className={`project-path ${record.sourcePath ? "" : "warning"}`}
+            title={record.sourcePath || sourceDisplayName}
+          >
+            原视频：{sourceDisplayName}
           </p>
         </div>
         <span className={`phase-tag ${record.storageMode === "reference" ? "" : "warning"}`}>
@@ -944,6 +1015,7 @@ function VideoPage({ videos, isLoading }) {
             </small>
           </div>
           <DirectoryResult
+            artifactKey="bsRoformer.outputDirectory"
             label="输出目录"
             path={separation?.outputDirectory}
             ready={separation?.outputDirectoryReady}
@@ -951,8 +1023,8 @@ function VideoPage({ videos, isLoading }) {
           />
           {separation?.outputs && (
             <div className="track-results">
-              <FileResult label="DX 对白轨" file={separation.outputs.dialogue} onOpen={openPath} />
-              <FileResult label="MX+FX 背景轨" file={separation.outputs.background} onOpen={openPath} />
+              <FileResult artifactKey="bsRoformer.dialogue" label="DX 对白轨" file={separation.outputs.dialogue} onOpen={openPath} />
+              <FileResult artifactKey="bsRoformer.background" label="MX+FX 背景轨" file={separation.outputs.background} onOpen={openPath} />
             </div>
           )}
           {separationError && <p className="workflow-error">{separationError}</p>}
@@ -996,6 +1068,7 @@ function VideoPage({ videos, isLoading }) {
             </small>
           </div>
           <DirectoryResult
+            artifactKey="ocr.outputDirectory"
             label="输出目录"
             path={ocr?.outputDirectory}
             ready={ocr?.outputDirectoryReady}
@@ -1003,8 +1076,8 @@ function VideoPage({ videos, isLoading }) {
           />
           {ocr?.outputs && (
             <div className="track-results">
-              <FileResult label="OCR 字幕 SRT" file={ocr.outputs.srt} onOpen={openPath} />
-              <FileResult label="OCR 质量报告" file={ocr.outputs.report} onOpen={openPath} />
+              <FileResult artifactKey="ocr.srt" label="OCR 字幕 SRT" file={ocr.outputs.srt} onOpen={openPath} />
+              <FileResult artifactKey="ocr.report" label="OCR 质量报告" file={ocr.outputs.report} onOpen={openPath} />
             </div>
           )}
           {ocrError && <p className="workflow-error">{ocrError}</p>}
@@ -1051,6 +1124,7 @@ function VideoPage({ videos, isLoading }) {
           </div>
           <div className="track-results input-results">
             <FileResult
+              artifactKey="whisperx.input"
               label="输入音轨"
               file={{ path: speakers?.inputPath, ready: speakers?.canRun }}
               onOpen={openPath}
@@ -1058,6 +1132,7 @@ function VideoPage({ videos, isLoading }) {
             />
           </div>
           <DirectoryResult
+            artifactKey="whisperx.outputDirectory"
             label="输出目录"
             path={speakers?.outputDirectory}
             ready={speakers?.outputDirectoryReady}
@@ -1065,8 +1140,8 @@ function VideoPage({ videos, isLoading }) {
           />
           {speakers?.outputs && (
             <div className="track-results">
-              <FileResult label="Speaker_Diarization SRT" file={speakers.outputs.srt} onOpen={openPath} />
-              <FileResult label="Speaker_Diarization JSON" file={speakers.outputs.json} onOpen={openPath} />
+              <FileResult artifactKey="whisperx.srt" label="Speaker_Diarization SRT" file={speakers.outputs.srt} onOpen={openPath} />
+              <FileResult artifactKey="whisperx.json" label="Speaker_Diarization JSON" file={speakers.outputs.json} onOpen={openPath} />
             </div>
           )}
           {speakersError && <p className="workflow-error">{speakersError}</p>}
@@ -1112,11 +1187,12 @@ function VideoPage({ videos, isLoading }) {
           </div>
           {finalSubtitles?.inputs && (
             <div className="track-results input-results">
-              <FileResult label="WhisperX SRT" file={finalSubtitles.inputs.speakerSrt} onOpen={openPath} readyText="已就绪" />
-              <FileResult label="OCR 标点修复 SRT" file={finalSubtitles.inputs.ocrSrt} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="whisperx.srt" label="WhisperX SRT" file={finalSubtitles.inputs.speakerSrt} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="ocr.srt" label="OCR 标点修复 SRT" file={finalSubtitles.inputs.ocrSrt} onOpen={openPath} readyText="已就绪" />
             </div>
           )}
           <DirectoryResult
+            artifactKey="finalSubtitles.outputDirectory"
             label="输出目录"
             path={finalSubtitles?.outputDirectory}
             ready={finalSubtitles?.outputDirectoryReady}
@@ -1124,7 +1200,7 @@ function VideoPage({ videos, isLoading }) {
           />
           {finalSubtitles?.outputs && (
             <div className="track-results">
-              <FileResult label="最终中文字幕 SRT" file={finalSubtitles.outputs.srt} onOpen={openPath} />
+              <FileResult artifactKey="finalSubtitles.srt" label="最终中文字幕 SRT" file={finalSubtitles.outputs.srt} onOpen={openPath} />
             </div>
           )}
           {finalSubtitlesError && <p className="workflow-error">{finalSubtitlesError}</p>}
@@ -1214,12 +1290,14 @@ function VideoPage({ videos, isLoading }) {
               <section className="translation-file-panel" aria-label="字幕文件交接">
                 <div className="track-results">
                   <FileResult
+                    artifactKey="finalSubtitles.srt"
                     label="Gemini 输入：最终中文字幕 SRT"
                     file={finalSubtitles.outputs.srt}
                     onOpen={openPath}
                     readyText="已就绪"
                   />
                   <FileResult
+                    artifactKey="translation.geminiJson"
                     label="Gemini 输出：翻译与整句分段 JSON"
                     file={{
                       path: finalSubtitles.translationTarget.jsonPath,
@@ -1280,6 +1358,7 @@ function VideoPage({ videos, isLoading }) {
               {subtitleEditorMessage && <p className="copy-status">{subtitleEditorMessage}</p>}
               <div className="subtitle-editor-actions">
                 <FileResult
+                  artifactKey="translation.geminiJson"
                   label="Gemini 翻译 JSON"
                   file={{
                     path: finalSubtitles.translationTarget.jsonPath,
@@ -1288,6 +1367,7 @@ function VideoPage({ videos, isLoading }) {
                   onOpen={openPath}
                 />
                 <FileResult
+                  artifactKey="translation.englishDraftSrt"
                   label="英文显示字幕 SRT"
                   file={{
                     path: finalSubtitles.translationTarget.srtPath,
@@ -1363,13 +1443,14 @@ function VideoPage({ videos, isLoading }) {
           <DubbingProgress progress={englishDubbing?.dubbingProgress} />
           {englishDubbing?.inputs && (
             <div className="track-results input-results">
-              <FileResult label="最终中文字幕（主时间轴）" file={englishDubbing.inputs.chineseTimelineSrt} onOpen={openPath} readyText="已就绪" />
-              <FileResult label="英文字幕译稿" file={englishDubbing.inputs.englishDraftSrt} onOpen={openPath} readyText="已就绪" />
-              <FileResult label="DX 对白轨" file={englishDubbing.inputs.dialogue} onOpen={openPath} readyText="已就绪" />
-              <FileResult label="MX+FX 背景底轨" file={englishDubbing.inputs.background} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="finalSubtitles.srt" label="最终中文字幕（主时间轴）" file={englishDubbing.inputs.chineseTimelineSrt} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="translation.englishDraftSrt" label="英文字幕译稿" file={englishDubbing.inputs.englishDraftSrt} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="bsRoformer.dialogue" label="DX 对白轨" file={englishDubbing.inputs.dialogue} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="bsRoformer.background" label="MX+FX 背景底轨" file={englishDubbing.inputs.background} onOpen={openPath} readyText="已就绪" />
             </div>
           )}
           <DirectoryResult
+            artifactKey="englishDubbing.workDirectory"
             label="工作目录"
             path={englishDubbing?.workDirectory}
             ready={englishDubbing?.workDirectoryReady}
@@ -1377,14 +1458,14 @@ function VideoPage({ videos, isLoading }) {
           />
           {englishDubbing?.outputs && (
             <div className="track-results">
-              <FileResult label="受控英文字幕 SRT" file={englishDubbing.outputs.controlledEnglishSrt} onOpen={openPath} />
-              <FileResult label="英文字幕预检报告" file={englishDubbing.outputs.preflightReport} onOpen={openPath} />
-              <FileResult label="英文配音整句分段清单" file={englishDubbing.outputs.dubbingGroupsCsv} onOpen={openPath} />
-              <FileResult label="英文配音整句分段报告" file={englishDubbing.outputs.dubbingGroupsReport} onOpen={openPath} />
-              <FileResult label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
-              <FileResult label="英文对白整轨" file={englishDubbing.outputs.dialogueTrack} onOpen={openPath} />
-              <FileResult label="英文成片混音 MX+FX" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
-              <FileResult label="英文整轨合成结果" file={englishDubbing.outputs.assemblyReport} onOpen={openPath} />
+              <FileResult artifactKey="translation.controlledEnglishSrt" label="受控英文字幕 SRT" file={englishDubbing.outputs.controlledEnglishSrt} onOpen={openPath} />
+              <FileResult artifactKey="translation.preflightReport" label="英文字幕预检报告" file={englishDubbing.outputs.preflightReport} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.dubbingGroupsCsv" label="英文配音整句分段清单" file={englishDubbing.outputs.dubbingGroupsCsv} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.dubbingGroupsReport" label="英文配音整句分段报告" file={englishDubbing.outputs.dubbingGroupsReport} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.segmentManifest" label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.dialogueTrack" label="英文对白整轨" file={englishDubbing.outputs.dialogueTrack} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.mixedTrack" label="英文成片混音 MX+FX" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.assemblyReport" label="英文整轨合成结果" file={englishDubbing.outputs.assemblyReport} onOpen={openPath} />
             </div>
           )}
           {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
@@ -1456,9 +1537,9 @@ function VideoPage({ videos, isLoading }) {
           </section>
           {englishDubbing?.outputs && (
             <div className="track-results">
-              <FileResult label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
-              <FileResult label="VoxCPM 试听报告" file={englishDubbing.outputs.dubbingReport} onOpen={openPath} />
-              <FileResult label="更新后的英文混音" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.segmentManifest" label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.dubbingReport" label="VoxCPM 试听报告" file={englishDubbing.outputs.dubbingReport} onOpen={openPath} />
+              <FileResult artifactKey="englishDubbing.mixedTrack" label="更新后的英文混音" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
             </div>
           )}
           {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
@@ -1489,9 +1570,9 @@ function VideoPage({ videos, isLoading }) {
           </div>
           {finalVideo?.inputs && (
             <div className="track-results input-results final-input-results">
-              <FileResult label="原视频画面" file={finalVideo.inputs.video} onOpen={openPath} readyText="已就绪" />
-              <FileResult label="受控英文字幕 SRT" file={finalVideo.inputs.subtitle} onOpen={openPath} readyText="已就绪" />
-              <FileResult label="替换音轨：英文成片混音" file={finalVideo.inputs.audio} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="source.video" label="原视频画面" file={finalVideo.inputs.video} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="translation.controlledEnglishSrt" label="受控英文字幕 SRT" file={finalVideo.inputs.subtitle} onOpen={openPath} readyText="已就绪" />
+              <FileResult artifactKey="englishDubbing.mixedTrack" label="替换音轨：英文成片混音" file={finalVideo.inputs.audio} onOpen={openPath} readyText="已就绪" />
             </div>
           )}
           <section className="subtitle-style-panel" aria-label="英文字幕样式设置">
@@ -1587,6 +1668,7 @@ function VideoPage({ videos, isLoading }) {
             )}
           </section>
           <DirectoryResult
+            artifactKey="finalVideo.outputDirectory"
             label="最终成片输出目录"
             path={finalVideo?.outputDirectory}
             ready={finalVideo?.outputDirectoryReady}
@@ -1594,9 +1676,9 @@ function VideoPage({ videos, isLoading }) {
           />
           {finalVideo?.outputs && (
             <div className="track-results">
-              <FileResult label="成片字幕 ASS" file={finalVideo.outputs.styledAss} onOpen={openPath} />
-              <FileResult label="最终英文成片 MP4" file={finalVideo.outputs.video} onOpen={openPath} />
-              <FileResult label="成片结果报告" file={finalVideo.outputs.report} onOpen={openPath} />
+              <FileResult artifactKey="finalVideo.styledAss" label="成片字幕 ASS" file={finalVideo.outputs.styledAss} onOpen={openPath} />
+              <FileResult artifactKey="finalVideo.video" label="最终英文成片 MP4" file={finalVideo.outputs.video} onOpen={openPath} />
+              <FileResult artifactKey="finalVideo.report" label="成片结果报告" file={finalVideo.outputs.report} onOpen={openPath} />
             </div>
           )}
           {finalVideoError && <p className="workflow-error">{finalVideoError}</p>}
