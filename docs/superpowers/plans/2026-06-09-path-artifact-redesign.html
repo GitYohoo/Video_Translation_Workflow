@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>路径与产物交互改造实施计划</title>
+  <style>
+    body { color: #1f2937; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; line-height: 1.75; margin: 32px auto; max-width: 1040px; padding: 0 24px; }
+    h1, h2 { color: #111827; line-height: 1.25; }
+    code { background: #f3f4f6; border-radius: 4px; padding: 2px 5px; }
+    .task { border: 1px solid #d1d5db; border-radius: 8px; margin: 18px 0; padding: 16px 18px; }
+    .commit { color: #065f46; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>路径与产物交互改造实施计划</h1>
+  <p><strong>目标：</strong>分阶段完成路径输入、路径展示、打开文件、项目目录和运行环境配置改造，并在每个稳定节点提交 git。</p>
+  <p><strong>架构：</strong>先抽出服务端路径契约，再改前端消费方式，最后引入工作目录与环境配置。每一步都保持现有工作流可运行。</p>
+  <p><strong>技术栈：</strong>React、Express、Node 内置 test runner、Vite。</p>
+
+  <section class="task">
+    <h2>任务 1：产物路径模块与测试</h2>
+    <ul>
+      <li>新增 <code>server/project-paths.js</code>，集中管理路径推导和 artifact key。</li>
+      <li>新增 <code>tests/project-paths.test.mjs</code>，用 Node test runner 验证 key、摘要和未知 key。</li>
+      <li>把 <code>server/index.js</code> 中的路径函数迁移为模块调用。</li>
+      <li class="commit">提交：<code>refactor: centralize project artifact paths</code></li>
+    </ul>
+  </section>
+
+  <section class="task">
+    <h2>任务 2：打开文件 API 改为 artifact key</h2>
+    <ul>
+      <li>新增 <code>POST /api/videos/:id/open-artifact</code>。</li>
+      <li>保留旧 <code>open-path</code> 接口为兼容层，前端不再调用。</li>
+      <li>服务端拒绝未知 key 和未生成路径。</li>
+      <li class="commit">提交：<code>feat: open project artifacts by key</code></li>
+    </ul>
+  </section>
+
+  <section class="task">
+    <h2>任务 3：前端产物摘要展示</h2>
+    <ul>
+      <li>改造 <code>FileResult</code>、<code>DirectoryResult</code>，默认展示短名称。</li>
+      <li>增加复制完整路径、展开完整路径和打开按钮。</li>
+      <li>让所有结果行传 artifact key，而不是把绝对路径作为打开参数。</li>
+      <li class="commit">提交：<code>feat: simplify artifact path presentation</code></li>
+    </ul>
+  </section>
+
+  <section class="task">
+    <h2>任务 4：项目工作目录与环境配置</h2>
+    <ul>
+      <li>为新视频记录 <code>workspaceDirectory</code>，默认在 <code>D:\VideoTranslationProjects</code> 下。</li>
+      <li>新增 <code>data/settings.json</code> 读取逻辑，允许覆盖 VoxCPM Python、Token、临时目录、项目根目录。</li>
+      <li>保留历史记录兼容：没有 <code>workspaceDirectory</code> 的项目继续按原路径生成。</li>
+      <li class="commit">提交：<code>feat: add project workspace and runtime settings</code></li>
+    </ul>
+  </section>
+
+  <section class="task">
+    <h2>任务 5：最终验证</h2>
+    <ul>
+      <li>运行 <code>npm run test:node</code>。</li>
+      <li>运行 <code>npm run build</code>。</li>
+      <li>报告 Python 测试状态，不自动安装 C 盘依赖。</li>
+      <li class="commit">提交：按需提交验证中发现的小修正。</li>
+    </ul>
+  </section>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>路径与产物交互改造设计</title>
+  <style>
+    body { color: #1f2937; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; line-height: 1.75; margin: 32px auto; max-width: 980px; padding: 0 24px; }
+    h1, h2 { color: #111827; line-height: 1.25; }
+    code { background: #f3f4f6; border-radius: 4px; padding: 2px 5px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #d1d5db; padding: 9px 11px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; }
+    .note { background: #eff6ff; border-left: 4px solid #2563eb; padding: 12px 16px; }
+  </style>
+</head>
+<body>
+  <h1>路径与产物交互改造设计</h1>
+  <p class="note">目标：把绝对路径从用户主交互中降级为内部细节，同时保留本地工作流需要的真实文件路径能力。</p>
+
+  <h2>设计原则</h2>
+  <ul>
+    <li>前端不再把绝对路径作为主要展示内容，默认展示文件名、目录名、状态和动作。</li>
+    <li>前端打开文件时只提交产物 key，例如 <code>finalVideo.video</code>，服务端负责解析真实路径。</li>
+    <li>所有路径推导集中到服务端路径模块，避免路由文件继续膨胀。</li>
+    <li>项目级工作目录作为新增能力引入，但首轮保持兼容：已有视频仍可在原视频旁边生成产物。</li>
+    <li>模型、Token、临时目录等环境路径从硬编码迁移到配置读取，默认值继续偏向 D 盘。</li>
+  </ul>
+
+  <h2>范围</h2>
+  <table>
+    <thead>
+      <tr><th>阶段</th><th>交付</th><th>不做</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>产物契约</td>
+        <td>新增 artifact key、摘要字段、服务端解析函数和打开接口。</td>
+        <td>不更改现有脚本参数格式。</td>
+      </tr>
+      <tr>
+        <td>前端体验</td>
+        <td>结果行显示文件名/目录名，提供打开、复制路径、显示完整路径。</td>
+        <td>不引入 Electron 或浏览器原生无法支持的文件选择能力。</td>
+      </tr>
+      <tr>
+        <td>项目目录</td>
+        <td>为新项目记录 <code>workspaceDirectory</code>，并提供统一计算入口。</td>
+        <td>不自动迁移历史产物，不移动用户原视频。</td>
+      </tr>
+      <tr>
+        <td>环境配置</td>
+        <td>读取 <code>data/settings.json</code> 覆盖运行环境路径。</td>
+        <td>不在本轮做完整设置页。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>服务端结构</h2>
+  <p>新增 <code>server/project-paths.js</code>，负责从视频记录和设置生成产物表。路由层只消费产物表，不再散落路径拼接逻辑。产物对象包含：</p>
+  <ul>
+    <li><code>key</code>：稳定标识，例如 <code>englishDubbing.mixedTrack</code>。</li>
+    <li><code>path</code>：服务端内部真实路径。</li>
+    <li><code>kind</code>：<code>file</code> 或 <code>directory</code>。</li>
+    <li><code>label</code>：面向用户的中文名称。</li>
+    <li><code>displayName</code>：默认展示的文件名或目录名。</li>
+  </ul>
+
+  <h2>前端结构</h2>
+  <p><code>FileResult</code> 和 <code>DirectoryResult</code> 合并到统一的产物行思路：主展示是 label + displayName + 状态，按钮触发 <code>openArtifact(key)</code>。完整绝对路径只在展开详情、复制路径、tooltip 中出现。</p>
+
+  <h2>测试策略</h2>
+  <ul>
+    <li>新增 Node 单元测试覆盖 artifact key 解析、路径摘要生成、打开接口拒绝未知 key。</li>
+    <li>继续运行 <code>npm run build</code> 覆盖前端构建。</li>
+    <li>Python 测试依赖 <code>pytest</code>，当前系统 Python 未安装；本轮不往 C 盘安装依赖。</li>
+  </ul>
+</body>
+</html>
