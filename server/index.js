@@ -6,11 +6,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { createCatalogStore } from "./catalog-store.js";
+import { createJobStore, jobIdFor } from "./job-store.js";
 import {
   createProjectPathResolver,
   projectWorkspaceDirectory,
 } from "./project-paths.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
+import { recoverWorkflowTask } from "./workflow-job-state.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(serverDirectory, "..");
@@ -18,6 +20,7 @@ const dataDirectory = path.join(projectDirectory, "data");
 const uploadDirectory = path.join(dataDirectory, "uploads");
 const thumbnailDirectory = path.join(dataDirectory, "thumbnails");
 const logDirectory = path.join(dataDirectory, "logs");
+const jobDirectory = path.join(dataDirectory, "jobs");
 const catalogPath = path.join(dataDirectory, "videos.json");
 const settingsPath = path.join(dataDirectory, "settings.json");
 const distDirectory = path.join(projectDirectory, "dist");
@@ -136,6 +139,7 @@ await fs.mkdir(dataDirectory, { recursive: true });
 await fs.mkdir(uploadDirectory, { recursive: true });
 await fs.mkdir(thumbnailDirectory, { recursive: true });
 await fs.mkdir(logDirectory, { recursive: true });
+await fs.mkdir(jobDirectory, { recursive: true });
 
 const activeThumbnailTasks = new Map();
 const activeBsRoformerTasks = new Map();
@@ -147,6 +151,7 @@ const activeFinalVideoTasks = new Map();
 const finalVideoStyles = new Map();
 const catalogStore = createCatalogStore(catalogPath);
 const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
+const jobStore = createJobStore(jobDirectory);
 
 function publicVideo(record) {
   return {
@@ -795,7 +800,9 @@ async function bsRoformerStatus(record) {
       error: "该项目没有可执行的原视频路径。",
     };
   }
-  const task = activeBsRoformerTasks.get(record.id);
+  const activeTask = activeBsRoformerTasks.get(record.id);
+  const persistedJob = await jobStore.readJob(jobIdFor(record.id, "bs-roformer"));
+  const task = recoverWorkflowTask(activeTask, persistedJob);
   const dialogueReady = await isFile(outputs.dialoguePath);
   const backgroundReady = await isFile(outputs.backgroundPath);
   let status = "ready";
@@ -839,6 +846,11 @@ async function startBsRoformer(record) {
   await fs.mkdir(bsRoformerTempDirectory, { recursive: true });
   const logPath = path.join(logDirectory, `${record.id}_BS-RoFormer.log`);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
+  const job = await jobStore.startJob({
+    videoId: record.id,
+    workflow: "bs-roformer",
+    logPath,
+  });
   const child = spawn(
     bsRoformerPython,
     [
@@ -867,8 +879,9 @@ async function startBsRoformer(record) {
     },
   );
   const task = {
+    id: job.id,
     status: "running",
-    startedAt: new Date().toISOString(),
+    startedAt: job.startedAt,
     finishedAt: null,
     logPath,
     error: null,
@@ -876,17 +889,23 @@ async function startBsRoformer(record) {
   activeBsRoformerTasks.set(record.id, task);
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
-  child.on("error", (error) => {
+  child.on("error", async (error) => {
     task.status = "failed";
     task.error = error.message;
     task.finishedAt = new Date().toISOString();
+    await jobStore.failJob(task.id, error.message);
     output.end(`\n任务启动失败：${error.message}\n`);
   });
-  child.on("close", (code) => {
+  child.on("close", async (code) => {
     if (task.status !== "failed") {
       task.status = code === 0 ? "completed" : "failed";
       task.error = code === 0 ? null : `处理进程退出码：${code}`;
       task.finishedAt = new Date().toISOString();
+      if (code === 0) {
+        await jobStore.finishJob(task.id, "completed");
+      } else {
+        await jobStore.failJob(task.id, task.error);
+      }
     }
     output.end(`\n任务状态：${task.status}\n`);
   });
