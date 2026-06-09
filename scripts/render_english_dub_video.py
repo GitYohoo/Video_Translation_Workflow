@@ -13,7 +13,12 @@ TIME_PATTERN = re.compile(
     r"(?P<start>\d{2}:\d{2}:\d{2}[,.]\d{3})\s*-->\s*"
     r"(?P<end>\d{2}:\d{2}:\d{2}[,.]\d{3})"
 )
-SPEAKER_PATTERN = re.compile(r"^\[[^\]]+\]\s*", re.DOTALL)
+SPEAKER_PATTERN = re.compile(r"^\[(?P<label>[^\]]+)\]\s*(?P<body>.*)$", re.DOTALL)
+NON_SPEECH_PATTERN = re.compile(
+    r"(laughs?|laughter|chuckles?|giggles?|crying|sobbing|breath(?:ing)?|gasps?|"
+    r"screams?|coughs?|sighs?)",
+    re.IGNORECASE,
+)
 HEX_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
@@ -79,7 +84,14 @@ def load_srt(path: Path) -> list[SubtitleCue]:
         end_ms = parse_time(match.group("end"))
         if end_ms <= start_ms:
             raise ValueError(f"SRT 第 {number} 段结束时间必须晚于开始时间。")
-        dialogue = SPEAKER_PATTERN.sub("", "\n".join(lines[2:]).strip(), count=1).strip()
+        raw_dialogue = "\n".join(lines[2:]).strip()
+        label_match = SPEAKER_PATTERN.match(raw_dialogue)
+        if label_match and label_match.group("body").strip():
+            dialogue = label_match.group("body").strip()
+        elif label_match and NON_SPEECH_PATTERN.search(label_match.group("label")):
+            dialogue = raw_dialogue
+        else:
+            dialogue = raw_dialogue
         if not dialogue:
             raise ValueError(f"SRT 第 {number} 段去除角色标签后没有英文正文。")
         cues.append(SubtitleCue(number, start_ms, end_ms, dialogue))

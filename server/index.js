@@ -58,12 +58,7 @@ const planEnglishDubbingGroupsScript = path.join(
   "plan_english_dubbing_groups.py",
 );
 const splitDubbingCoreScript = path.join(workflowRootDirectory, "scripts", "split_dubbing_segments.py");
-const indexTtsCoreScript = path.join(workflowRootDirectory, "scripts", "indextts2_dubbing_workflow.py");
-const indexTtsAssetsScript = path.join(
-  workflowRootDirectory,
-  "scripts",
-  "cache_indextts2_runtime_assets.py",
-);
+const voxCpmCoreScript = path.join(workflowRootDirectory, "scripts", "voxcpm_dubbing_workflow.py");
 const assembleEnglishTrackScript = path.join(
   workflowRootDirectory,
   "scripts",
@@ -74,10 +69,9 @@ const renderEnglishVideoScript = path.join(
   "scripts",
   "render_english_dub_video.py",
 );
-const indexTtsPython = "D:\\models\\indextts2-venv\\Scripts\\python.exe";
-const indexTtsModelDirectory = "D:\\models\\IndexTeam\\IndexTTS-2";
-const indexTtsCodeDirectory = path.join(bsRoformerRuntimeDirectory, "index-tts");
-const indexTtsTempDirectory = "D:\\Temp\\IndexTTS2Runtime";
+const voxCpmPython = "D:\\models\\indextts2-venv\\Scripts\\python.exe";
+const voxCpmModelId = "openbmb/VoxCPM2";
+const voxCpmTempDirectory = "D:\\Temp\\VoxCPMRuntime";
 const whisperxModelDirectory = path.join(bsRoformerRuntimeDirectory, "whisperx-models");
 const whisperxTokenPath = "D:\\models\\huggingface\\token";
 const ffmpegDirectory = path.join(
@@ -95,6 +89,14 @@ const torchLibraryDirectory = path.join(
   "lib",
 );
 const port = Number(process.env.PORT || 3001);
+const nonSpeechFallbackPatterns = [
+  { pattern: /哈{2,}|呵{2,}|笑声|大笑|冷笑|嗤笑|偷笑|笑|laughs?|laughter|chuckles?|giggles?/i, text: "[laughs]" },
+  { pattern: /哭声|哭泣|抽泣|啜泣|呜咽|crying|sobbing/i, text: "[crying]" },
+  { pattern: /喘息|喘气|气喘|倒吸|breath(?:ing)?|gasps?/i, text: "[breathing]" },
+  { pattern: /尖叫|惊叫|screams?/i, text: "[screams]" },
+  { pattern: /咳嗽|咳|coughs?/i, text: "[coughs]" },
+  { pattern: /叹气|叹息|sighs?/i, text: "[sighs]" },
+];
 const videoMimeTypes = new Map([
   [".mp4", "video/mp4"],
   [".mov", "video/quicktime"],
@@ -224,7 +226,7 @@ function finalSubtitlesOutputPaths(record) {
     srtPath: path.join(outputDirectory, `${videoStem}_最终中文字幕.srt`),
     translationTarget: {
       outputDirectory: translationOutputDirectory,
-      jsonPath: path.join(translationOutputDirectory, `${videoStem}_Gemini翻译与配音句群.json`),
+      jsonPath: path.join(translationOutputDirectory, `${videoStem}_Gemini翻译与整句分段.json`),
       srtPath: path.join(translationOutputDirectory, `${videoStem}_最终英文字幕.srt`),
       editorDraftPath: path.join(translationOutputDirectory, `${videoStem}_字幕编辑草稿.json`),
     },
@@ -244,8 +246,8 @@ function englishDubbingOutputPaths(record) {
   }
   const videoStem = path.parse(record.sourcePath).name;
   const workDirectory = path.join(finalPaths.translationTarget.outputDirectory, "英文配音分段");
-  const dubbingGroupsDirectory = path.join(finalPaths.translationTarget.outputDirectory, "英文配音句群");
-  const dubbingDirectory = path.join(workDirectory, "IndexTTS2_英文配音");
+  const dubbingGroupsDirectory = path.join(finalPaths.translationTarget.outputDirectory, "英文配音整句分段");
+  const dubbingDirectory = path.join(workDirectory, "VoxCPM_英文配音");
   const assemblyDirectory = path.join(dubbingDirectory, "整轨合成");
   return {
     inputs: {
@@ -257,21 +259,20 @@ function englishDubbingOutputPaths(record) {
       background: separationPaths.backgroundPath,
     },
     dubbingGroupsDirectory,
-    dubbingGroupsCsvPath: path.join(dubbingGroupsDirectory, "英文配音句群清单.csv"),
-    dubbingGroupsJsonPath: path.join(dubbingGroupsDirectory, "英文配音句群清单.json"),
-    dubbingGroupsReportPath: path.join(dubbingGroupsDirectory, "英文配音句群规划.html"),
+    dubbingGroupsCsvPath: path.join(dubbingGroupsDirectory, "英文配音整句分段清单.csv"),
+    dubbingGroupsJsonPath: path.join(dubbingGroupsDirectory, "英文配音整句分段清单.json"),
+    dubbingGroupsReportPath: path.join(dubbingGroupsDirectory, "英文配音整句分段规划.html"),
     dubbingGroupsDisplaySrtPath: path.join(dubbingGroupsDirectory, "英文显示字幕.srt"),
     workDirectory,
     segmentManifestPath: path.join(workDirectory, "英文配音分段清单.csv"),
     dubbingDirectory,
-    dubbingManifestPath: path.join(dubbingDirectory, "IndexTTS2_英文配音清单.csv"),
-    dubbingReportPath: path.join(dubbingDirectory, "IndexTTS2_英文配音结果.html"),
+    dubbingManifestPath: path.join(dubbingDirectory, "VoxCPM_英文配音清单.csv"),
+    dubbingReportPath: path.join(dubbingDirectory, "VoxCPM_英文配音结果.html"),
     assemblyDirectory,
     dialogueTrackPath: path.join(assemblyDirectory, `${videoStem}_英文对白整轨.wav`),
     mixedTrackPath: path.join(assemblyDirectory, `${videoStem}_英文成片混音_MX+FX.wav`),
     assemblyReportPath: path.join(assemblyDirectory, "英文整轨合成结果.html"),
-    assetsStatePath: path.join(dubbingDirectory, "日志", "IndexTTS2_资源状态.json"),
-    progressLogPath: path.join(dubbingDirectory, "日志", "IndexTTS2_运行.log"),
+    progressLogPath: path.join(dubbingDirectory, "日志", "VoxCPM_运行.log"),
     preflightReportPath: finalPaths.controlledTarget.reportPath,
     videoStem,
   };
@@ -351,6 +352,82 @@ async function modificationTime(filePath) {
     return (await fs.stat(filePath)).mtimeMs;
   } catch {
     return null;
+  }
+}
+
+function parseVoxCpmProgressLogContent(content) {
+  const progressPattern =
+    /\[(\d+)\/(\d+)\]\s*(合成|已完成|已存在，跳过|时间窗已变化，重新适配|保留原声)第\s+(\d+)\s+段(?:：([^\r\n]+))?/g;
+  const completedNumbers = new Set();
+  let total = 0;
+  let current = 0;
+  let currentSegment = null;
+  let currentAction = null;
+  let currentDetail = "";
+  let lastLine = "";
+  for (const match of content.matchAll(progressPattern)) {
+    current = Number(match[1]);
+    total = Math.max(total, Number(match[2]));
+    currentAction = match[3];
+    currentSegment = Number(match[4]);
+    currentDetail = (match[5] || "").trim();
+    lastLine = match[0].trim();
+    if (currentAction !== "合成") {
+      completedNumbers.add(currentSegment);
+    }
+  }
+  const generatedMatch = content.match(/已生成英文配音片段：\s*(\d+)\s*个/);
+  const generatedClips = generatedMatch ? Number(generatedMatch[1]) : null;
+  if (generatedClips !== null) {
+    for (let number = 1; number <= generatedClips; number += 1) {
+      completedNumbers.add(number);
+    }
+    total = Math.max(total, generatedClips);
+  }
+  const completed = completedNumbers.size;
+  const percent = total > 0 ? Math.min(100, Math.round((completed * 1000) / total) / 10) : 0;
+  return {
+    total,
+    completed,
+    percent,
+    current,
+    currentSegment,
+    currentAction,
+    currentDetail,
+    lastLine,
+    generatedClips,
+    completedSegmentIds: [...completedNumbers]
+      .sort((left, right) => left - right)
+      .map((number) => String(number).padStart(3, "0")),
+    isComplete: total > 0 && completed >= total,
+  };
+}
+
+async function readVoxCpmProgress(progressLogPath) {
+  try {
+    const content = await fs.readFile(progressLogPath, "utf8");
+    const progress = parseVoxCpmProgressLogContent(content);
+    return {
+      ...progress,
+      logPath: progressLogPath,
+      ready: true,
+    };
+  } catch {
+    return {
+      total: 0,
+      completed: 0,
+      percent: 0,
+      current: 0,
+      currentSegment: null,
+      currentAction: null,
+      currentDetail: "",
+      lastLine: "",
+      generatedClips: null,
+      completedSegmentIds: [],
+      isComplete: false,
+      logPath: progressLogPath,
+      ready: false,
+    };
   }
 }
 
@@ -444,25 +521,38 @@ function parseGeminiDisplaySubtitles(content, label) {
     const speaker = typeof item?.speaker === "string" ? item.speaker.trim() : "";
     const parsed = subtitleRoleAndText(rawText);
     const text = parsed.text || rawText;
-    if (!text) {
-      throw new Error(`${label}第 ${number} 条 display_subtitles 没有英文正文。`);
-    }
     return {
       number,
-      text: speaker && !parsed.role ? taggedSubtitleText(speaker, text) : rawText,
+      text: text && speaker && !parsed.role ? taggedSubtitleText(speaker, text) : rawText,
     };
   });
 }
 
 function subtitleRoleAndText(text) {
-  const match = editableSubtitleSpeakerPattern.exec(text.trim());
+  const trimmed = text.trim();
+  const match = editableSubtitleSpeakerPattern.exec(trimmed);
   if (!match) {
-    return { role: "", text: text.trim() };
+    return { role: "", text: trimmed };
+  }
+  const role = match.groups.speaker.trim();
+  const body = match.groups.text.trim();
+  if (!body && nonSpeechEnglishFallback(role)) {
+    return { role: "", text: trimmed };
   }
   return {
-    role: match.groups.speaker.trim(),
-    text: match.groups.text.trim(),
+    role,
+    text: body,
   };
+}
+
+function nonSpeechEnglishFallback(chineseText) {
+  const normalized = String(chineseText || "").replace(/\s+/g, "");
+  for (const { pattern, text } of nonSpeechFallbackPatterns) {
+    if (pattern.test(normalized)) {
+      return text;
+    }
+  }
+  return "";
 }
 
 function validateEditableMasterTimeline(cues) {
@@ -564,9 +654,10 @@ async function subtitleEditorState(record) {
   }
   const cues = canonical.map((cue) => {
     const canonicalParts = subtitleRoleAndText(cue.text);
-    const english = englishByNumber.get(cue.number) || "";
+    const fallbackEnglish = nonSpeechEnglishFallback(canonicalParts.text);
+    const english = englishByNumber.get(cue.number) || fallbackEnglish;
     const skipped = skippedByNumber.has(cue.number)
-      ? skippedByNumber.get(cue.number)
+      ? skippedByNumber.get(cue.number) && !fallbackEnglish
       : hasSavedTranslation && !english;
     return {
       number: cue.number,
@@ -637,10 +728,11 @@ async function importTranslatedSubtitleFile(record) {
         savedAt: new Date().toISOString(),
         importedFrom: hasGeminiJson ? paths.translationTarget.jsonPath : paths.translationTarget.srtPath,
         cues: canonical.map((cue) => {
-          const english = translatedByNumber.get(cue.number) || "";
+          const canonicalParts = subtitleRoleAndText(cue.text);
+          const english = translatedByNumber.get(cue.number) || nonSpeechEnglishFallback(canonicalParts.text);
           return {
             number: cue.number,
-            role: subtitleRoleAndText(cue.text).role,
+            role: canonicalParts.role,
             english,
             skipped: !english,
           };
@@ -692,16 +784,24 @@ async function saveSubtitleEditor(record, requestedCues) {
   }
   const chineseCues = [];
   const englishCues = [];
+  const savedDraftCues = [];
   for (const cue of canonical) {
     const requested = requestedByNumber.get(cue.number);
     if (!requested) {
       throw new Error(`缺少第 ${cue.number} 段字幕编辑内容。`);
     }
     const chinese = subtitleRoleAndText(cue.text).text;
+    const english = requested.english || nonSpeechEnglishFallback(chinese);
     chineseCues.push({ ...cue, text: taggedSubtitleText(requested.role, chinese) });
-    if (requested.english) {
-      englishCues.push({ ...cue, text: taggedSubtitleText(requested.role, requested.english) });
+    if (english) {
+      englishCues.push({ ...cue, text: taggedSubtitleText(requested.role, english) });
     }
+    savedDraftCues.push({
+      number: cue.number,
+      role: requested.role,
+      english,
+      skipped: !english,
+    });
   }
   const chineseChanged = await writeFileIfChanged(
     paths.srtPath,
@@ -712,15 +812,7 @@ async function saveSubtitleEditor(record, requestedCues) {
     JSON.stringify(
       {
         savedAt: new Date().toISOString(),
-        cues: canonical.map((cue) => {
-          const requested = requestedByNumber.get(cue.number);
-          return {
-            number: cue.number,
-            role: requested.role,
-            english: requested.english,
-            skipped: requested.skipped,
-          };
-        }),
+        cues: savedDraftCues,
       },
       null,
       2,
@@ -1433,7 +1525,7 @@ async function englishDubbingStatus(record) {
   const dialogueTrackReady = await isFile(paths.dialogueTrackPath);
   const mixedTrackReady = await isFile(paths.mixedTrackPath);
   const assemblyReportReady = await isFile(paths.assemblyReportPath);
-  const [canonicalTime, draftTime, controlledTime, preflightTime, dialogueTime, backgroundTime, mixedTime] =
+  const [canonicalTime, draftTime, controlledTime, preflightTime, dialogueTime, backgroundTime, sourceTime, mixedTime] =
     await Promise.all([
       modificationTime(paths.inputs.chineseTimelineSrt),
       modificationTime(paths.inputs.englishDraftSrt),
@@ -1441,6 +1533,7 @@ async function englishDubbingStatus(record) {
       modificationTime(paths.preflightReportPath),
       modificationTime(paths.inputs.dialogue),
       modificationTime(paths.inputs.background),
+      modificationTime(record.sourcePath),
       modificationTime(paths.mixedTrackPath),
     ]);
   const preflightOutdated =
@@ -1452,9 +1545,16 @@ async function englishDubbingStatus(record) {
   const mixOutdated =
     preflightOutdated ||
     mixedTime === null ||
-    [controlledTime, dialogueTime, backgroundTime].some(
+    [controlledTime, dialogueTime, backgroundTime, sourceTime].some(
       (inputTime) => inputTime !== null && inputTime > mixedTime,
     );
+  const canRedub =
+    canRun &&
+    segmentManifestReady &&
+    dubbingManifestReady &&
+    dialogueTrackReady &&
+    mixedTrackReady &&
+    !mixOutdated;
   let status = canRun ? "ready" : "blocked";
   if (task?.status === "running") {
     status = "running";
@@ -1463,15 +1563,18 @@ async function englishDubbingStatus(record) {
   } else if (mixedTrackReady && dialogueTrackReady && !mixOutdated) {
     status = "completed";
   }
+  const dubbingProgress = await readVoxCpmProgress(paths.progressLogPath);
   return {
     status,
     canRun,
+    canRedub,
     editorComplete: Boolean(editor.complete),
     skippedEnglishNumbers: editor.cues.filter((cue) => cue.skipped).map((cue) => cue.number),
     missingEnglishNumbers: editor.missingEnglishNumbers || [],
     preflightOutdated,
     mixOutdated,
     stage: task?.stage || null,
+    dubbingProgress,
     inputs,
     workDirectory: paths.workDirectory,
     workDirectoryReady: await isDirectory(paths.workDirectory),
@@ -1491,6 +1594,7 @@ async function englishDubbingStatus(record) {
     startedAt: task?.startedAt || null,
     finishedAt: task?.finishedAt || null,
     logPath: task?.logPath || null,
+    redubSegmentNumber: task?.redubSegmentNumber || null,
     error: task?.error || null,
   };
 }
@@ -1523,15 +1627,12 @@ async function startEnglishDubbing(record) {
   }
   for (const [label, filePath] of [
     ["英文字幕预检脚本", controlledEnglishSubtitlesCoreScript],
-    ["英文配音句群规划脚本", planEnglishDubbingGroupsScript],
+    ["英文配音整句分段规划脚本", planEnglishDubbingGroupsScript],
     ["分段切割脚本", splitDubbingCoreScript],
-    ["IndexTTS2 配音脚本", indexTtsCoreScript],
-    ["IndexTTS2 资源缓存脚本", indexTtsAssetsScript],
+    ["VoxCPM 配音脚本", voxCpmCoreScript],
     ["整轨混音脚本", assembleEnglishTrackScript],
     ["字幕处理 Python 环境", punctuationPython],
-    ["IndexTTS2 Python 环境", indexTtsPython],
-    ["IndexTTS2 模型配置", path.join(indexTtsModelDirectory, "config.yaml")],
-    ["IndexTTS2 官方代码", path.join(indexTtsCodeDirectory, "indextts", "infer_v2.py")],
+    ["VoxCPM Python 环境", voxCpmPython],
     ["FFmpeg 程序", path.join(ffmpegDirectory, "ffmpeg.exe")],
   ]) {
     if (!(await isFile(filePath))) {
@@ -1540,8 +1641,8 @@ async function startEnglishDubbing(record) {
   }
 
   await fs.mkdir(paths.workDirectory, { recursive: true });
-  await fs.mkdir(indexTtsTempDirectory, { recursive: true });
-  const logPath = path.join(logDirectory, `${record.id}_IndexTTS2_英文配音混音.log`);
+  await fs.mkdir(voxCpmTempDirectory, { recursive: true });
+  const logPath = path.join(logDirectory, `${record.id}_VoxCPM_英文配音混音.log`);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
   const task = {
     status: "running",
@@ -1567,9 +1668,8 @@ async function startEnglishDubbing(record) {
     MODELSCOPE_CACHE: "D:\\models\\modelscope",
     TORCH_HOME: "D:\\models\\torch",
     PIP_CACHE_DIR: "D:\\models\\pip-cache",
-    TEMP: indexTtsTempDirectory,
-    TMP: indexTtsTempDirectory,
-    PYTHONPATH: indexTtsCodeDirectory,
+    TEMP: voxCpmTempDirectory,
+    TMP: voxCpmTempDirectory,
   };
 
   function runProcess(filePath, arguments_, environment) {
@@ -1619,7 +1719,7 @@ async function startEnglishDubbing(record) {
       );
       const subtitleStats = await fs.stat(paths.inputs.englishSrt);
       task.stage = "dubbing-groups";
-      output.write("\n步骤 2/5：生成英文配音句群规划。\n");
+      output.write("\n步骤 2/5：生成 Gemini 整句配音分段规划。\n");
       const groupArguments = [
         planEnglishDubbingGroupsScript,
         "--subtitle",
@@ -1639,16 +1739,20 @@ async function startEnglishDubbing(record) {
       await runProcess(punctuationPython, groupArguments, commonEnvironment);
       const dubbingGroupsStats = await fs.stat(paths.dubbingGroupsCsvPath);
       const dialogueStats = await fs.stat(paths.inputs.dialogue);
+      const sourceAudioStats = await fs.stat(record.sourcePath);
       const segmentManifestStats = await fs.stat(paths.segmentManifestPath).catch(() => null);
       const dialogueChanged =
         segmentManifestStats && dialogueStats.mtimeMs > segmentManifestStats.mtimeMs;
+      const sourceAudioChanged =
+        segmentManifestStats && sourceAudioStats.mtimeMs > segmentManifestStats.mtimeMs;
       const regenerateSegments =
         !segmentManifestStats ||
         subtitleStats.mtimeMs > segmentManifestStats.mtimeMs ||
         dubbingGroupsStats.mtimeMs > segmentManifestStats.mtimeMs ||
-        dialogueChanged;
+        dialogueChanged ||
+        sourceAudioChanged;
       task.stage = "segments";
-      output.write("\n步骤 3/5：按英文配音句群切割 DX 对白轨。\n");
+      output.write("\n步骤 3/5：按整句分段切割 DX 对白轨。\n");
       if (regenerateSegments) {
         const segmentArguments = [
           splitDubbingCoreScript,
@@ -1656,10 +1760,12 @@ async function startEnglishDubbing(record) {
           paths.dubbingGroupsCsvPath,
           "--audio",
           paths.inputs.dialogue,
+          "--preserve-audio",
+          record.sourcePath,
           "--output-dir",
           paths.workDirectory,
         ];
-        if (dialogueChanged) {
+        if (dialogueChanged || sourceAudioChanged) {
           segmentArguments.push("--overwrite");
         } else if (segmentManifestStats) {
           segmentArguments.push("--update");
@@ -1669,69 +1775,32 @@ async function startEnglishDubbing(record) {
         output.write(`英文字幕未变更，复用分段清单：${paths.segmentManifestPath}\n`);
       }
 
-      task.stage = "assets";
-      output.write("\n步骤 4/5：确认 IndexTTS2 运行资源并生成英文配音。\n");
-      await fs.mkdir(path.dirname(paths.assetsStatePath), { recursive: true });
-      try {
-        await runProcess(
-          indexTtsPython,
-          [
-            indexTtsAssetsScript,
-            "--cache-dir",
-            "D:\\models\\huggingface\\hub",
-            "--state-file",
-            paths.assetsStatePath,
-            "--local-files-only",
-            "--max-retries",
-            "1",
-          ],
-          ttsEnvironment,
-        );
-      } catch {
-        output.write("本地缓存不完整，开始下载缺少的 IndexTTS2 运行资源。\n");
-        await runProcess(
-          indexTtsPython,
-          [
-            indexTtsAssetsScript,
-            "--cache-dir",
-            "D:\\models\\huggingface\\hub",
-            "--state-file",
-            paths.assetsStatePath,
-            "--max-retries",
-            "2",
-            "--retry-delay",
-            "10",
-          ],
-          ttsEnvironment,
-        );
-      }
-
       task.stage = "dubbing";
       const dubbingArguments = [
-        indexTtsCoreScript,
+        voxCpmCoreScript,
         "--manifest",
         paths.segmentManifestPath,
         "--output-dir",
         paths.dubbingDirectory,
-        "--model-dir",
-        indexTtsModelDirectory,
-        "--index-code-dir",
-        indexTtsCodeDirectory,
+        "--model-id",
+        voxCpmModelId,
         "--progress-log",
         paths.progressLogPath,
-        "--use-fp16",
-        "--emotion-alpha",
-        "0.6",
+        "--device",
+        "cuda",
+        "--cfg-value",
+        "2.0",
+        "--inference-timesteps",
+        "10",
+        "--normalize",
+        "--per-segment-reference",
       ];
-      output.write("IndexTTS2 将复用未变更片段，仅生成或重新适配受影响片段。\n");
+      output.write("\n步骤 4/5：使用 VoxCPM2 生成英文配音。\n");
+      output.write("VoxCPM 将复用未变更片段，仅生成或重新适配受影响片段。\n");
       await runProcess(
-        indexTtsPython,
+        voxCpmPython,
         dubbingArguments,
-        {
-          ...ttsEnvironment,
-          HF_HUB_OFFLINE: "1",
-          TRANSFORMERS_OFFLINE: "1",
-        },
+        ttsEnvironment,
       );
 
       task.stage = "mixing";
@@ -1761,6 +1830,165 @@ async function startEnglishDubbing(record) {
     } catch (error) {
       task.status = "failed";
       task.error = `英文配音混音失败：${error.message}`;
+      task.finishedAt = new Date().toISOString();
+      output.end(`\n任务状态：failed\n${task.error}\n`);
+    }
+  })();
+  return englishDubbingStatus(record);
+}
+
+async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
+  const paths = englishDubbingOutputPaths(record);
+  if (!paths) {
+    throw new Error("该项目没有原视频路径，无法执行单条重新配音。");
+  }
+  const segmentNumber = Number(segmentNumberValue);
+  if (!Number.isInteger(segmentNumber) || segmentNumber < 1) {
+    throw new Error("请输入大于等于 1 的配音分段编号。");
+  }
+  if (activeEnglishDubbingTasks.get(record.id)?.status === "running") {
+    return englishDubbingStatus(record);
+  }
+  const status = await englishDubbingStatus(record);
+  if (!status.canRedub) {
+    throw new Error("请先完成步骤 06 的英文配音与混音，再执行单条重新配音。");
+  }
+  for (const [label, filePath] of [
+    ["英文配音分段清单", paths.segmentManifestPath],
+    ["VoxCPM 英文配音清单", paths.dubbingManifestPath],
+    ["VoxCPM 配音脚本", voxCpmCoreScript],
+    ["整轨混音脚本", assembleEnglishTrackScript],
+    ["VoxCPM Python 环境", voxCpmPython],
+    ["字幕处理 Python 环境", punctuationPython],
+    ["FFmpeg 程序", path.join(ffmpegDirectory, "ffmpeg.exe")],
+  ]) {
+    if (!(await isFile(filePath))) {
+      throw new Error(`找不到${label}：${filePath}`);
+    }
+  }
+
+  await fs.mkdir(paths.dubbingDirectory, { recursive: true });
+  await fs.mkdir(paths.assemblyDirectory, { recursive: true });
+  await fs.mkdir(voxCpmTempDirectory, { recursive: true });
+  const paddedSegmentNumber = String(segmentNumber).padStart(3, "0");
+  const logPath = path.join(
+    logDirectory,
+    `${record.id}_VoxCPM_单条重新配音_${paddedSegmentNumber}.log`,
+  );
+  const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
+  const task = {
+    status: "running",
+    stage: "redubbing",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    logPath,
+    error: null,
+    redubSegmentNumber: segmentNumber,
+  };
+  activeEnglishDubbingTasks.set(record.id, task);
+
+  const commonEnvironment = {
+    ...process.env,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+    PATH: `${ffmpegDirectory};${process.env.PATH || ""}`,
+  };
+  const ttsEnvironment = {
+    ...commonEnvironment,
+    HF_HOME: "D:\\models\\huggingface",
+    HF_HUB_CACHE: "D:\\models\\huggingface\\hub",
+    HUGGINGFACE_HUB_CACHE: "D:\\models\\huggingface\\hub",
+    MODELSCOPE_CACHE: "D:\\models\\modelscope",
+    TORCH_HOME: "D:\\models\\torch",
+    PIP_CACHE_DIR: "D:\\models\\pip-cache",
+    TEMP: voxCpmTempDirectory,
+    TMP: voxCpmTempDirectory,
+  };
+
+  function runProcess(filePath, arguments_, environment) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(filePath, arguments_, {
+        cwd: workflowRootDirectory,
+        windowsHide: true,
+        env: environment,
+      });
+      let started = true;
+      child.stdout.pipe(output, { end: false });
+      child.stderr.pipe(output, { end: false });
+      child.on("error", (error) => {
+        started = false;
+        reject(error);
+      });
+      child.on("close", (code) => {
+        if (!started) {
+          return;
+        }
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`处理进程退出码：${code}`));
+        }
+      });
+    });
+  }
+
+  void (async () => {
+    try {
+      output.write(`步骤 1/2：重新生成第 ${paddedSegmentNumber} 段 VoxCPM 英文配音。\n`);
+      await runProcess(
+        voxCpmPython,
+        [
+          voxCpmCoreScript,
+          "--manifest",
+          paths.segmentManifestPath,
+          "--output-dir",
+          paths.dubbingDirectory,
+          "--model-id",
+          voxCpmModelId,
+          "--progress-log",
+          paths.progressLogPath,
+          "--device",
+          "cuda",
+          "--cfg-value",
+          "2.0",
+          "--inference-timesteps",
+          "10",
+          "--normalize",
+          "--per-segment-reference",
+          "--segment-number",
+          String(segmentNumber),
+          "--overwrite",
+        ],
+        ttsEnvironment,
+      );
+
+      task.stage = "mixing";
+      output.write(`\n步骤 2/2：用第 ${paddedSegmentNumber} 段新配音重新合成英文混音。\n`);
+      await runProcess(
+        punctuationPython,
+        [
+          assembleEnglishTrackScript,
+          "--manifest",
+          paths.dubbingManifestPath,
+          "--output-dir",
+          paths.assemblyDirectory,
+          "--output-prefix",
+          paths.videoStem,
+          "--timeline-reference",
+          paths.inputs.background,
+          "--background",
+          paths.inputs.background,
+          "--overwrite",
+        ],
+        commonEnvironment,
+      );
+      task.status = "completed";
+      task.stage = "completed";
+      task.finishedAt = new Date().toISOString();
+      output.end("\n任务状态：completed\n");
+    } catch (error) {
+      task.status = "failed";
+      task.error = `第 ${paddedSegmentNumber} 段重新配音失败：${error.message}`;
       task.finishedAt = new Date().toISOString();
       output.end(`\n任务状态：failed\n${task.error}\n`);
     }
@@ -2318,6 +2546,22 @@ app.post("/api/videos/:id/workflow/english-dubbing-mix/run", async (request, res
       return;
     }
     response.status(202).json(await startEnglishDubbing(video));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/workflow/english-dubbing-mix/redub", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    response.status(202).json(
+      await startSingleEnglishDubbingRedub(video, request.body?.segmentNumber),
+    );
   } catch (error) {
     next(error);
   }

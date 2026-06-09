@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>Gemini 翻译与配音句群提示词</title>
+  <title>Gemini 翻译与整句配音分段提示词</title>
   <style>
     body { max-width: 980px; margin: 32px auto; padding: 0 22px; font-family: "Microsoft YaHei", Arial, sans-serif; line-height: 1.7; color: #111827; }
     h1, h2 { color: #111827; }
@@ -12,26 +12,27 @@
   </style>
 </head>
 <body>
-  <h1>Gemini 翻译与配音句群提示词</h1>
+  <h1>Gemini 翻译与整句配音分段提示词</h1>
   <div class="note">
     <p>项目内正式入口在 Web UI 的“步骤 05 角色校对与英文翻译”。页面会根据当前视频自动生成输入 SRT 路径和 Gemini JSON 输出路径，不再使用根目录业务 PowerShell 包装脚本。</p>
   </div>
 
   <h2>提示词核心要求</h2>
-  <pre>请把输入的中文字幕翻译为自然英文，并额外生成英文配音句群规划。
+  <pre>请把输入的中文字幕翻译为自然英文，并额外生成英文整句配音分段建议。
 
 硬性要求：
 1. display_subtitles 必须保持原始 SRT 的编号、起止时间、条数和顺序，不得合并、拆分或改动时间轴。
 2. display_subtitles 的 text 是用于画面显示的英文字幕，可以保留 [Speaker] 角色标签。
-3. dubbing_groups 用于后续英文 TTS 配音，可以合并相邻字幕。
-4. dubbing_groups 只允许合并同一角色连续台词，不得跨角色合并。
-5. 相邻字幕间隔小于 1 秒，且语义、语气或表演节奏连续时，优先合并。
-6. 极短语气词、承接词、半句，例如 Oh, Uh, Um..., Hmph, Thanks.，应尽量并入同角色前后句。
-7. 每个配音句群总时长建议不超过 7 秒，英文文本建议不超过 220 字符。
-8. 如果角色变化、语义明显转折、停顿超过 1 秒、强情绪独立反应，必须断开。
-9. dubbing_groups 必须完整覆盖所有 display_subtitles，每条显示字幕只能出现一次。
-10. dubbing_groups 的 start 取第一条字幕开始时间，end 取最后一条字幕结束时间。
-11. dubbing_groups 的 text 要适合 TTS 一次性朗读，可在不改变意思的前提下合并标点和轻微润色。
+3. dubbing_groups 用于后续英文 TTS 配音，表示“整句分段建议”。
+4. 只能合并构成同一个完整句子或同一个不可拆台词单元的相邻字幕，不要因为同一说话人连续说话就合并多句话。
+5. 不得跨说话人合并。说话人变化、完整句结束、语义转折、明显停顿或新动作反应都必须断开。
+6. 极短语气词、承接词、半句，例如 Oh, Uh, Um..., Hmph, Thanks.，只有在它属于同一句完整台词时才并入相邻字幕。
+7. 每个 dubbing_group 的目标是“一次 TTS 朗读一句完整英文对白”，不是减少段数。
+8. dubbing_groups 必须完整覆盖所有 display_subtitles，每条显示字幕只能出现一次。
+9. dubbing_groups 的 start 取第一条字幕开始时间，end 取最后一条字幕结束时间；后续会按这个整句时间窗切割原始 DX 对白轨作为参考音色。
+10. dubbing_groups 的 text 要适合 TTS 一次性朗读，可在不改变意思的前提下合并标点和轻微润色。
+11. 对“哈哈哈、呵呵、大笑、冷笑、哭声、抽泣、喘息、喘气、尖叫、咳嗽、叹气”等非语言人声，不要翻译成可朗读对白，也不要写成 ha ha ha 给 TTS 朗读；这类条目的 segment_type 必须写 preserve_original，text 可写简短英文显示标签，例如 [laughs]、[crying]、[breathing]。
+12. 普通可朗读对白的 segment_type 必须写 tts。若一个 dubbing_group 内包含非语言人声并且没有实质台词，该 group 的 segment_type 必须是 preserve_original；如果非语言人声和实质台词混在一起，必须优先拆成相邻的 tts 与 preserve_original 两个 group。若原 SRT 时间窗无法拆分，同一句里可以保留 [laughs] 这类英文显示标签，但该 group 仍写 tts，后续只生成英文对白，不会整段叠加原轨，避免把中文对白带回成片。
 
 请只输出 JSON，不要输出 Markdown。</pre>
 
@@ -43,6 +44,7 @@
       "start": "00:00:00,000",
       "end": "00:00:03,000",
       "speaker": "Background Voice",
+      "segment_type": "tts",
       "text": "[Background Voice] What is a world where everyone is immortal like?"
     }
   ],
@@ -53,17 +55,18 @@
       "start": "00:00:00,000",
       "end": "00:00:05,800",
       "speaker": "Background Voice",
-      "text": "What is a world where everyone is immortal like? Hmph, it's downright awful.",
-      "merge_reason": "Same speaker, continuous narration, short pause and connected meaning."
+      "segment_type": "tts",
+      "text": "A complete English sentence for one TTS pass.",
+      "merge_reason": "Fragments 1-3 form one complete sentence."
     }
   ]
 }</pre>
 
   <h2>项目连接方式</h2>
-  <p>Gemini JSON 写入页面提示词指定的输出路径后，在 UI 点击“读取 Gemini 输出”完成导入校对。后续“步骤 06 IndexTTS2 英文配音与混音”会自动调用：</p>
+  <p>Gemini JSON 写入页面提示词指定的输出路径后，在 UI 点击“读取 Gemini 输出”完成导入校对。后续“步骤 06 VoxCPM 英文配音与混音”会按 Gemini 整句分段建议自动调用：</p>
   <pre>scripts/plan_english_dubbing_groups.py
 scripts/split_dubbing_segments.py
-scripts/indextts2_dubbing_workflow.py
+scripts/voxcpm_dubbing_workflow.py
 scripts/assemble_english_dub_track.py</pre>
 </body>
 </html>

@@ -12,6 +12,13 @@ TIME_PATTERN = re.compile(
     r"(?P<end>\d{2}:\d{2}:\d{2}[,.]\d{3})"
 )
 SPEAKER_PATTERN = re.compile(r"^\[(?P<speaker>[^\]]+)\]\s*(?P<text>.*)$", re.DOTALL)
+NON_SPEECH_PATTERN = re.compile(
+    r"(哈哈+|呵呵+|笑声|大笑|冷笑|嗤笑|偷笑|笑|laughs?|laughter|chuckles?|giggles?|"
+    r"哭声|哭泣|抽泣|啜泣|呜咽|crying|sobbing|"
+    r"喘息|喘气|气喘|倒吸|breath(?:ing)?|gasps?|"
+    r"尖叫|惊叫|screams?|咳嗽|咳|coughs?|叹气|叹息|sighs?)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -70,10 +77,15 @@ def load_srt(path: Path) -> list[Cue]:
 
 
 def speaker_and_text(text: str) -> tuple[str | None, str]:
-    match = SPEAKER_PATTERN.match(text.strip())
+    stripped = text.strip()
+    match = SPEAKER_PATTERN.match(stripped)
     if not match:
-        return None, text.strip()
-    return match.group("speaker").strip(), match.group("text").strip()
+        return None, stripped
+    speaker = match.group("speaker").strip()
+    body = match.group("text").strip()
+    if not body and NON_SPEECH_PATTERN.search(speaker):
+        return None, stripped
+    return speaker, body
 
 
 def validate_canonical(cues: list[Cue]) -> None:

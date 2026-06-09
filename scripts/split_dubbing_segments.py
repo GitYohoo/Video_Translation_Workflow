@@ -5,6 +5,7 @@ import csv
 import html
 import re
 import shutil
+import subprocess
 import sys
 import wave
 from dataclasses import dataclass
@@ -17,6 +18,14 @@ TIME_PATTERN = re.compile(
 )
 SPEAKER_PATTERN = re.compile(r"^\[(?P<speaker>[^\]]+)\]\s*(?P<line>.*)$", re.DOTALL)
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+NON_SPEECH_PATTERN = re.compile(
+    r"(哈哈+|呵呵+|大笑|笑声|冷笑|哭声|哭泣|抽泣|喘息|喘气|尖叫|咳嗽|叹气|"
+    r"\b(laughs?|laughter|chuckles?|giggles?|crying|sobbing|breath(?:ing)?|gasps?|"
+    r"screams?|coughs?|sighs?)\b)",
+    re.IGNORECASE,
+)
+PRESERVE_ORIGINAL = "preserve_original"
+TTS_SEGMENT = "tts"
 
 
 @dataclass(frozen=True)
@@ -28,14 +37,17 @@ class Cue:
     text: str
     speaker: str
     dialogue: str
+    segment_type: str = TTS_SEGMENT
+    preserve_original: bool = False
     merge_reason: str = ""
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="按英文 SRT 或配音句群时间轴切割 DX 对白轨，生成分段配音素材。")
+    parser = argparse.ArgumentParser(description="按英文 SRT 或整句配音分段时间轴切割 DX 对白轨，生成分段配音素材。")
     parser.add_argument("--subtitle", help="英文翻译 SRT 文件路径")
-    parser.add_argument("--dubbing-plan", help="英文配音句群 CSV；传入后按句群切割而不是逐条字幕")
+    parser.add_argument("--dubbing-plan", help="英文配音整句分段 CSV；传入后按整句时间窗切割")
     parser.add_argument("--audio", required=True, help="DX 对白轨 WAV 文件路径")
+    parser.add_argument("--preserve-audio", help="可选：非语言人声保留层来源，通常传入原视频路径")
     parser.add_argument("--output-dir", required=True, help="英文配音分段输出目录")
     parser.add_argument(
         "--overwrite",
@@ -73,11 +85,14 @@ def filename_time(milliseconds: int) -> str:
 
 
 def split_speaker(text: str) -> tuple[str, str]:
-    match = SPEAKER_PATTERN.match(text.strip())
+    stripped = text.strip()
+    match = SPEAKER_PATTERN.match(stripped)
     if not match:
-        return "未标注", text.strip()
+        return "未标注", stripped
     speaker = match.group("speaker").strip()
     dialogue = match.group("line").strip()
+    if not dialogue and NON_SPEECH_PATTERN.search(speaker):
+        return "未标注", stripped
     return speaker or "未标注", dialogue
 
 
@@ -123,12 +138,17 @@ def load_dubbing_plan(plan_path: Path) -> list[Cue]:
             start_ms = parse_srt_time(row["开始时间"])
             end_ms = parse_srt_time(row["结束时间"])
             if end_ms <= start_ms:
-                raise ValueError(f"配音句群第 {number} 段结束时间必须晚于开始时间。")
+                raise ValueError(f"配音整句分段第 {number} 段结束时间必须晚于开始时间。")
             dialogue = row["英文台词"].strip()
             if not dialogue:
-                raise ValueError(f"配音句群第 {number} 段没有英文台词。")
+                raise ValueError(f"配音整句分段第 {number} 段没有英文台词。")
             speaker = row.get("说话人", "未标注").strip() or "未标注"
             source_numbers = row.get("原字幕编号", str(number)).strip() or str(number)
+            segment_type = row.get("段类型", TTS_SEGMENT).strip() or TTS_SEGMENT
+            if segment_type not in {TTS_SEGMENT, PRESERVE_ORIGINAL}:
+                segment_type = TTS_SEGMENT
+            preserve_value = row.get("保留原声", "").strip().lower()
+            preserve_original = segment_type == PRESERVE_ORIGINAL or preserve_value in {"1", "true", "yes", "y", "是"}
             merge_reason = row.get("合并原因", "").strip()
             cues.append(
                 Cue(
@@ -139,14 +159,16 @@ def load_dubbing_plan(plan_path: Path) -> list[Cue]:
                     f"[{speaker}] {dialogue}" if speaker != "未标注" else dialogue,
                     speaker,
                     dialogue,
+                    segment_type,
+                    preserve_original,
                     merge_reason,
                 )
             )
     if not cues:
-        raise ValueError("配音句群 CSV 中没有可切割的段落。")
+        raise ValueError("配音整句分段 CSV 中没有可切割的段落。")
     for previous, current in zip(cues, cues[1:]):
         if current.start_ms < previous.start_ms:
-            raise ValueError(f"配音句群时间顺序错误：第 {current.number} 段早于第 {previous.number} 段。")
+            raise ValueError(f"配音整句分段时间顺序错误：第 {current.number} 段早于第 {previous.number} 段。")
     return cues
 
 
@@ -158,8 +180,10 @@ def safe_name(value: str) -> str:
 
 def prepare_output(output_dir: Path, overwrite: bool, update: bool) -> Path:
     clips_dir = output_dir / "片段"
+    preserve_dir = output_dir / "保留原声片段"
     generated_paths = [
         clips_dir,
+        preserve_dir,
         output_dir / "英文配音分段清单.csv",
         output_dir / "英文配音分段清单.html",
     ]
@@ -170,8 +194,11 @@ def prepare_output(output_dir: Path, overwrite: bool, update: bool) -> Path:
         )
     if overwrite and clips_dir.exists():
         shutil.rmtree(clips_dir)
+    if overwrite and preserve_dir.exists():
+        shutil.rmtree(preserve_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     clips_dir.mkdir(parents=True, exist_ok=True)
+    preserve_dir.mkdir(parents=True, exist_ok=True)
     return clips_dir
 
 
@@ -183,6 +210,13 @@ def clip_filename(cue: Cue) -> str:
     return (
         f"{cue.number:03d}_{filename_time(cue.start_ms)}-{filename_time(cue.end_ms)}_"
         f"{safe_name(cue.speaker)}.wav"
+    )
+
+
+def preserve_filename(cue: Cue) -> str:
+    return (
+        f"{cue.number:03d}_{filename_time(cue.start_ms)}-{filename_time(cue.end_ms)}_"
+        f"{safe_name(cue.speaker)}_原声.wav"
     )
 
 
@@ -214,11 +248,68 @@ def cut_audio(audio_path: Path, cues: list[Cue], clips_dir: Path) -> tuple[wave.
     return params, filenames
 
 
-def write_csv(output_path: Path, cues: list[Cue], filenames: list[str]) -> None:
+def cut_preserve_audio(source_path: Path, cues: list[Cue], output_dir: Path) -> list[str]:
+    preserve_dir = output_dir / "保留原声片段"
+    filenames: list[str] = []
+    preserve_cues = [cue for cue in cues if cue.preserve_original]
+    if not preserve_cues:
+        return ["" for _ in cues]
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise FileNotFoundError("找不到 FFmpeg，无法切割非语言人声保留层。")
+    by_number: dict[int, str] = {}
+    for cue in preserve_cues:
+        filename = preserve_filename(cue)
+        target = preserve_dir / filename
+        if not target.is_file():
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-ss",
+                    f"{cue.start_ms / 1000:.3f}",
+                    "-i",
+                    str(source_path),
+                    "-t",
+                    f"{(cue.end_ms - cue.start_ms) / 1000:.3f}",
+                    "-vn",
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "2",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(target),
+                ],
+                check=True,
+            )
+        by_number[cue.number] = f"保留原声片段/{filename}"
+    for cue in cues:
+        filenames.append(by_number.get(cue.number, ""))
+    return filenames
+
+
+def write_csv(output_path: Path, cues: list[Cue], filenames: list[str], preserve_filenames: list[str]) -> None:
     with output_path.open("w", encoding="utf-8-sig", newline="") as output:
         writer = csv.writer(output)
-        writer.writerow(["编号", "原字幕编号", "开始时间", "结束时间", "时长秒", "说话人", "音频文件", "英文台词", "合并原因"])
-        for cue, filename in zip(cues, filenames):
+        writer.writerow([
+            "编号",
+            "原字幕编号",
+            "开始时间",
+            "结束时间",
+            "时长秒",
+            "说话人",
+            "段类型",
+            "保留原声",
+            "音频文件",
+            "保留原声文件",
+            "英文台词",
+            "合并原因",
+        ])
+        for cue, filename, preserve_filename_ in zip(cues, filenames, preserve_filenames):
             writer.writerow(
                 [
                     cue.number,
@@ -227,7 +318,10 @@ def write_csv(output_path: Path, cues: list[Cue], filenames: list[str]) -> None:
                     srt_time(cue.end_ms),
                     f"{(cue.end_ms - cue.start_ms) / 1000:.3f}",
                     cue.speaker,
+                    cue.segment_type,
+                    "yes" if cue.preserve_original else "no",
                     f"片段/{filename}",
+                    preserve_filename_,
                     cue.dialogue,
                     cue.merge_reason,
                 ]
@@ -249,6 +343,8 @@ def write_html(
             f"<td>{cue.number:03d}</td>"
             f"<td>{html.escape(cue.source_numbers)}</td>"
             f"<td>{html.escape(cue.speaker)}</td>"
+            f"<td>{html.escape(cue.segment_type)}</td>"
+            f"<td>{'yes' if cue.preserve_original else 'no'}</td>"
             f"<td>{srt_time(cue.start_ms)} - {srt_time(cue.end_ms)}</td>"
             f"<td>{(cue.end_ms - cue.start_ms) / 1000:.3f}s</td>"
             f"<td>{html.escape(cue.dialogue)}</td>"
@@ -281,11 +377,11 @@ def write_html(
     <p>片段数量：<strong>{len(cues)}</strong></p>
     <p>字幕：<code>{html.escape(str(subtitle_path))}</code></p>
     <p>对白轨：<code>{html.escape(str(audio_path))}</code></p>
-    <p>音频格式：{params.framerate} Hz / {params.nchannels} 声道 / {params.sampwidth * 8} bit PCM；片段严格采用配音清单起止时间。</p>
+    <p>音频格式：{params.framerate} Hz / {params.nchannels} 声道 / {params.sampwidth * 8} bit PCM；片段严格采用配音清单起止时间。<code>preserve_original</code> 段会跳过 TTS，并在配音清单中指向保留原声片段。</p>
   </div>
   <table>
     <thead>
-      <tr><th>编号</th><th>原字幕编号</th><th>说话人</th><th>时间段</th><th>时长</th><th>英文台词</th><th>合并原因</th><th>原对白试听</th></tr>
+      <tr><th>编号</th><th>原字幕编号</th><th>说话人</th><th>段类型</th><th>保留原声</th><th>时间段</th><th>时长</th><th>英文台词</th><th>合并原因</th><th>原对白试听</th></tr>
     </thead>
     <tbody>
       {''.join(rows)}
@@ -301,6 +397,7 @@ def main() -> int:
     args = parse_args()
     subtitle_path = Path(args.subtitle).resolve() if args.subtitle else None
     audio_path = Path(args.audio).resolve()
+    preserve_audio_path = Path(args.preserve_audio).resolve() if args.preserve_audio else audio_path
     output_dir = Path(args.output_dir).resolve()
     plan_path = Path(args.dubbing_plan).resolve() if args.dubbing_plan else None
     if not subtitle_path and not plan_path:
@@ -308,16 +405,19 @@ def main() -> int:
     if subtitle_path and not subtitle_path.is_file():
         raise FileNotFoundError(f"找不到英文字幕：{subtitle_path}")
     if plan_path and not plan_path.is_file():
-        raise FileNotFoundError(f"找不到英文配音句群清单：{plan_path}")
+        raise FileNotFoundError(f"找不到英文配音整句分段清单：{plan_path}")
     if not audio_path.is_file():
         raise FileNotFoundError(f"找不到 DX 对白轨：{audio_path}")
+    if not preserve_audio_path.is_file():
+        raise FileNotFoundError(f"找不到非语言人声保留层来源：{preserve_audio_path}")
     if args.overwrite and args.update:
         raise ValueError("--overwrite 与 --update 不能同时使用。")
 
     cues = load_dubbing_plan(plan_path) if plan_path else load_cues(subtitle_path)
     clips_dir = prepare_output(output_dir, args.overwrite, args.update)
     params, filenames = cut_audio(audio_path, cues, clips_dir)
-    write_csv(output_dir / "英文配音分段清单.csv", cues, filenames)
+    preserve_filenames = cut_preserve_audio(preserve_audio_path, cues, output_dir)
+    write_csv(output_dir / "英文配音分段清单.csv", cues, filenames, preserve_filenames)
     write_html(
         output_dir / "英文配音分段清单.html",
         plan_path or subtitle_path,

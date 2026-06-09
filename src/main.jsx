@@ -56,15 +56,16 @@ ${geminiJsonPath}
 2. JSON 必须包含 display_subtitles 和 dubbing_groups 两个数组。
 3. display_subtitles 用于画面显示，必须保持输入 SRT 的编号、起止时间、条数和顺序，不得合并、拆分或改动时间轴。
 4. display_subtitles 的 text 只翻译字幕正文；若原文包含开头角色标签，例如 [黑猫]，必须保留角色标签，仅翻译其后的台词。
-5. dubbing_groups 用于后续英文 TTS 配音，可以合并相邻字幕，以减少配音段数并提升表演连贯性。
-6. dubbing_groups 只允许合并同一角色连续台词，不得跨角色合并。
-7. 相邻字幕间隔小于 1 秒，且语义、语气或表演节奏连续时，优先合并。
-8. 极短语气词、承接词、半句，例如 Oh, Uh, Um..., Hmph, Thanks.，应尽量并入同角色前后句。
-9. 每个配音句群总时长建议不超过 7 秒，英文文本建议不超过 220 字符。
-10. 如果角色变化、语义明显转折、停顿超过 1 秒、强情绪独立反应，必须断开。
-11. dubbing_groups 必须完整覆盖所有 display_subtitles，每条显示字幕只能出现一次。
-12. dubbing_groups 的 start 取第一条字幕开始时间，end 取最后一条字幕结束时间。
-13. dubbing_groups 的 text 要适合 TTS 一次性朗读，可在不改变意思的前提下合并标点和轻微润色。
+5. dubbing_groups 是后续英文 TTS 的“整句分段建议”，用于把被字幕切碎的同一句话合成一个配音分段。
+6. 不要因为同一说话人连续说话就合并多句话；只能合并构成同一个完整句子或同一个不可拆台词单元的相邻字幕。
+7. 不得跨说话人合并。说话人变化、完整句结束、语义转折、明显停顿或新动作反应都必须断开。
+8. 极短语气词、承接词、半句，例如 Oh, Uh, Um..., Hmph, Thanks.，只有在它属于同一句完整台词时才并入相邻字幕。
+9. 每个 dubbing_group 的目标是“一次 TTS 朗读一句完整英文对白”，不是减少段数。
+10. dubbing_groups 必须完整覆盖所有 display_subtitles，每条显示字幕只能出现一次。
+11. dubbing_groups 的 start 取第一条字幕开始时间，end 取最后一条字幕结束时间；后续会按这个整句时间窗切割原始 DX 对白轨作为参考音色。
+12. dubbing_groups 的 text 要适合 TTS 一次性朗读，可在不改变意思的前提下合并标点和轻微润色。
+13. 对“哈哈哈、呵呵、大笑、冷笑、哭声、抽泣、喘息、喘气、尖叫、咳嗽、叹气”等非语言人声，不要翻译成可朗读对白，也不要写成 ha ha ha 给 TTS 朗读；这类条目的 segment_type 必须写 preserve_original，text 可写简短英文显示标签，例如 [laughs]、[crying]、[breathing]。
+14. 普通可朗读对白的 segment_type 必须写 tts。若一个 dubbing_group 内包含非语言人声并且没有实质台词，该 group 的 segment_type 必须是 preserve_original；如果非语言人声和实质台词混在一起，必须优先拆成相邻的 tts 与 preserve_original 两个 group。若原 SRT 时间窗无法拆分，同一句里可以保留 [laughs] 这类英文显示标签，但该 group 仍写 tts，后续只生成英文对白，不会整段叠加原轨，避免把中文对白带回成片。
 
 JSON 格式：
 {
@@ -74,6 +75,7 @@ JSON 格式：
       "start": "00:00:00,000",
       "end": "00:00:03,000",
       "speaker": "角色名或未标注",
+      "segment_type": "tts 或 preserve_original",
       "text": "[角色名] English display subtitle text"
     }
   ],
@@ -84,8 +86,9 @@ JSON 格式：
       "start": "00:00:00,000",
       "end": "00:00:05,800",
       "speaker": "角色名或未标注",
-      "text": "English TTS text for the merged group.",
-      "merge_reason": "Same speaker, short pause, continuous meaning."
+      "segment_type": "tts 或 preserve_original",
+      "text": "A complete English sentence for one TTS pass.",
+      "merge_reason": "Fragments 1-3 form one complete sentence."
     }
   ]
 }`;
@@ -120,6 +123,46 @@ function DirectoryResult({ label, path, ready, onOpen }) {
         <button className="open-path-button" type="button" onClick={() => onOpen(path)}>
           打开
         </button>
+      )}
+    </div>
+  );
+}
+
+function DubbingProgress({ progress }) {
+  if (!progress?.ready && !progress?.total) {
+    return null;
+  }
+  const percent = Number.isFinite(progress.percent) ? progress.percent : 0;
+  const completedSegmentText =
+    progress.completedSegmentIds?.length > 0
+      ? progress.completedSegmentIds.slice(-6).join("、")
+      : "暂无";
+  return (
+    <div className="dubbing-progress">
+      <div className="dubbing-progress-head">
+        <strong>VoxCPM 配音进度</strong>
+        <span>{progress.completed || 0} / {progress.total || 0} 段</span>
+      </div>
+      <div className="dubbing-progress-bar" aria-label="VoxCPM 配音进度">
+        <span style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
+      </div>
+      <div className="dubbing-progress-meta">
+        <span>{percent.toFixed(1)}%</span>
+        {progress.currentAction && progress.currentSegment && (
+          <span>
+            {progress.currentAction}第 {String(progress.currentSegment).padStart(3, "0")} 段
+          </span>
+        )}
+      </div>
+      {progress.currentDetail && (
+        <p className="dubbing-progress-detail">{progress.currentDetail}</p>
+      )}
+      <p className="dubbing-progress-detail">
+        最近完成：{completedSegmentText}
+        {progress.completedSegmentIds?.length > 6 ? " ..." : ""}
+      </p>
+      {progress.generatedClips !== null && progress.generatedClips !== undefined && (
+        <p className="dubbing-progress-detail">已生成英文配音片段：{progress.generatedClips} 个</p>
       )}
     </div>
   );
@@ -280,6 +323,8 @@ function VideoPage({ videos, isLoading }) {
   const [englishDubbing, setEnglishDubbing] = useState(null);
   const [englishDubbingError, setEnglishDubbingError] = useState("");
   const [isStartingEnglishDubbing, setIsStartingEnglishDubbing] = useState(false);
+  const [redubSegmentNumber, setRedubSegmentNumber] = useState("");
+  const [isStartingSingleRedub, setIsStartingSingleRedub] = useState(false);
   const [finalVideo, setFinalVideo] = useState(null);
   const [finalVideoStyle, setFinalVideoStyle] = useState(defaultFinalVideoStyle);
   const [finalVideoError, setFinalVideoError] = useState("");
@@ -644,6 +689,13 @@ function VideoPage({ videos, isLoading }) {
         !englishDubbing.inputs.background?.ready && "MX+FX 背景底轨",
       ].filter(Boolean)
     : [];
+  const requestedRedubSegmentNumber = Number(redubSegmentNumber);
+  const canStartSingleRedub =
+    Number.isInteger(requestedRedubSegmentNumber) &&
+    requestedRedubSegmentNumber > 0 &&
+    englishDubbing?.canRedub &&
+    englishDubbing?.status !== "running" &&
+    record.storageMode === "reference";
 
   const updateSubtitleCue = (number, field, value) => {
     setSubtitleEditorMessage("");
@@ -774,6 +826,23 @@ function VideoPage({ videos, isLoading }) {
       setEnglishDubbingError(error.message);
     } finally {
       setIsStartingEnglishDubbing(false);
+    }
+  };
+
+  const runSingleEnglishDubbingRedub = async () => {
+    setIsStartingSingleRedub(true);
+    setEnglishDubbingError("");
+    try {
+      const status = await requestJson(`/api/videos/${record.id}/workflow/english-dubbing-mix/redub`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ segmentNumber: requestedRedubSegmentNumber }),
+      });
+      setEnglishDubbing(status);
+    } catch (error) {
+      setEnglishDubbingError(error.message);
+    } finally {
+      setIsStartingSingleRedub(false);
     }
   };
 
@@ -973,9 +1042,11 @@ function VideoPage({ videos, isLoading }) {
             <small>
               {speakers?.status === "running"
                 ? "WhisperX 正在后台执行，页面会自动刷新状态。"
-                : speakers?.canRun
-                  ? "已检测到 DX 对白轨，可以执行 WhisperX。"
-                  : "请先完成步骤 01，生成 DX 对白轨。"}
+                : speakers?.status === "failed"
+                  ? "WhisperX 上次执行失败，可以查看错误信息后重新执行。"
+                  : speakers?.canRun
+                    ? "已检测到 DX 对白轨，可以执行 WhisperX。"
+                    : "请先完成步骤 01，生成 DX 对白轨。"}
             </small>
           </div>
           <div className="track-results input-results">
@@ -1079,7 +1150,7 @@ function VideoPage({ videos, isLoading }) {
         <div className="workflow-card manual-step">
           <p className="eyebrow">步骤 05</p>
           <h2>角色校对与英文翻译</h2>
-          <p>将最终中文字幕文件交给 Gemini 生成 JSON：逐条英文显示字幕和配音句群规划。读取后可校对角色与译文，配音阶段会优先按句群减少段数。</p>
+          <p>将最终中文字幕文件交给 Gemini 生成 JSON：逐条英文显示字幕和整句配音分段建议。读取后可校对角色与译文，配音阶段会按整句时间窗切割原始对白作为参考音色。</p>
           <div className={`step-status ${canTranslate ? "ready" : "blocked"}`}>
             <strong>{canTranslate ? "可以翻译与校对" : "等待最终中文字幕"}</strong>
             <small>
@@ -1113,7 +1184,7 @@ function VideoPage({ videos, isLoading }) {
                 <div>
                   <strong>Gemini 文件翻译提示词</strong>
                   <p>
-                    提示词可编辑，要求 Gemini 读取中文字幕 SRT，并输出包含显示字幕与配音句群的 JSON。复制按钮会复制当前内容。
+                    提示词可编辑，要求 Gemini 读取中文字幕 SRT，并输出包含显示字幕与整句配音分段建议的 JSON。复制按钮会复制当前内容。
                   </p>
                 </div>
                 <div className="translation-assistant-actions">
@@ -1149,7 +1220,7 @@ function VideoPage({ videos, isLoading }) {
                     readyText="已就绪"
                   />
                   <FileResult
-                    label="Gemini 输出：翻译与配音句群 JSON"
+                    label="Gemini 输出：翻译与整句分段 JSON"
                     file={{
                       path: finalSubtitles.translationTarget.jsonPath,
                       ready: finalSubtitles.translationTarget.jsonReady,
@@ -1248,8 +1319,8 @@ function VideoPage({ videos, isLoading }) {
         </div>
         <div className="workflow-card manual-step">
           <p className="eyebrow">步骤 06</p>
-          <h2>IndexTTS2 英文配音与混音</h2>
-          <p>先将英文译稿同步到主时间轴并预检，再仅更新受影响配音片段，最后与 MX+FX 背景底轨混音。</p>
+          <h2>VoxCPM 英文配音与混音</h2>
+          <p>先将英文译稿同步到主时间轴并预检，再使用 VoxCPM 仅更新受影响配音片段，最后与 MX+FX 背景底轨混音。</p>
           <div className={`step-status ${englishDubbing?.status || "blocked"}`}>
             <strong>
               {englishDubbing?.status === "running" &&
@@ -1257,16 +1328,16 @@ function VideoPage({ videos, isLoading }) {
                 "正在预检英文字幕"}
               {englishDubbing?.status === "running" &&
                 englishDubbing.stage === "dubbing-groups" &&
-                "正在规划英文配音句群"}
+                "正在规划英文整句分段"}
               {englishDubbing?.status === "running" &&
                 englishDubbing.stage === "segments" &&
-                "正在按句群切割 DX 对白轨"}
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "assets" &&
-                "正在准备 IndexTTS2 资源"}
+                "正在按整句分段切割 DX 对白轨"}
               {englishDubbing?.status === "running" &&
                 englishDubbing.stage === "dubbing" &&
-                "正在生成英文配音"}
+                "正在使用 VoxCPM 生成英文配音"}
+              {englishDubbing?.status === "running" &&
+                englishDubbing.stage === "redubbing" &&
+                `正在重新配音第 ${String(englishDubbing.redubSegmentNumber || "").padStart(3, "0")} 段`}
               {englishDubbing?.status === "running" &&
                 englishDubbing.stage === "mixing" &&
                 "正在合成英文混音"}
@@ -1289,6 +1360,7 @@ function VideoPage({ videos, isLoading }) {
                     : "需存在英文字幕译稿、最终中文字幕、DX 对白轨与 MX+FX 背景底轨。"}
             </small>
           </div>
+          <DubbingProgress progress={englishDubbing?.dubbingProgress} />
           {englishDubbing?.inputs && (
             <div className="track-results input-results">
               <FileResult label="最终中文字幕（主时间轴）" file={englishDubbing.inputs.chineseTimelineSrt} onOpen={openPath} readyText="已就绪" />
@@ -1307,8 +1379,8 @@ function VideoPage({ videos, isLoading }) {
             <div className="track-results">
               <FileResult label="受控英文字幕 SRT" file={englishDubbing.outputs.controlledEnglishSrt} onOpen={openPath} />
               <FileResult label="英文字幕预检报告" file={englishDubbing.outputs.preflightReport} onOpen={openPath} />
-              <FileResult label="英文配音句群清单" file={englishDubbing.outputs.dubbingGroupsCsv} onOpen={openPath} />
-              <FileResult label="英文配音句群报告" file={englishDubbing.outputs.dubbingGroupsReport} onOpen={openPath} />
+              <FileResult label="英文配音整句分段清单" file={englishDubbing.outputs.dubbingGroupsCsv} onOpen={openPath} />
+              <FileResult label="英文配音整句分段报告" file={englishDubbing.outputs.dubbingGroupsReport} onOpen={openPath} />
               <FileResult label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
               <FileResult label="英文对白整轨" file={englishDubbing.outputs.dialogueTrack} onOpen={openPath} />
               <FileResult label="英文成片混音 MX+FX" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
@@ -1335,8 +1407,65 @@ function VideoPage({ videos, isLoading }) {
                 : "开始英文配音与混音"}
           </button>
         </div>
-        <div className="workflow-card manual-step final-video-step">
+        <div className="workflow-card manual-step redub-step">
           <p className="eyebrow">步骤 07</p>
+          <h2>单条重新配音</h2>
+          <p>输入英文配音分段清单中的编号，只重新生成这一条 VoxCPM 配音，并自动重新合成英文混音。</p>
+          <div className={`step-status ${englishDubbing?.canRedub ? "ready" : "blocked"}`}>
+            <strong>
+              {englishDubbing?.status === "running" &&
+                englishDubbing.stage === "redubbing" &&
+                `正在重新配音第 ${String(englishDubbing.redubSegmentNumber || "").padStart(3, "0")} 段`}
+              {englishDubbing?.status === "running" &&
+                englishDubbing.stage === "mixing" &&
+                "正在重新合成英文混音"}
+              {englishDubbing?.status !== "running" &&
+                englishDubbing?.canRedub &&
+                "可以单条重新配音"}
+              {englishDubbing?.status !== "running" &&
+                !englishDubbing?.canRedub &&
+                "等待完整英文混音"}
+            </strong>
+            <small>
+              {englishDubbing?.status === "running"
+                ? "单条重配音任务完成后，英文混音会自动更新，最终成片需在步骤 08 重新生成。"
+                : englishDubbing?.canRedub
+                  ? "编号来自步骤 06 的“英文配音分段清单”或 VoxCPM 试听报告。"
+                  : "请先完成步骤 06，且当前英文混音不能处于过期状态。"}
+            </small>
+          </div>
+          <section className="single-redub-panel" aria-label="单条重新配音">
+            <label className="single-redub-field">
+              <span>配音分段编号</span>
+              <input
+                min="1"
+                placeholder="例如 12"
+                type="number"
+                value={redubSegmentNumber}
+                onChange={(event) => setRedubSegmentNumber(event.target.value)}
+              />
+            </label>
+            <button
+              className="primary-button single-redub-action"
+              disabled={isStartingSingleRedub || !canStartSingleRedub}
+              type="button"
+              onClick={runSingleEnglishDubbingRedub}
+            >
+              {isStartingSingleRedub ? "正在启动..." : "重新配音这一条"}
+            </button>
+          </section>
+          {englishDubbing?.outputs && (
+            <div className="track-results">
+              <FileResult label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
+              <FileResult label="VoxCPM 试听报告" file={englishDubbing.outputs.dubbingReport} onOpen={openPath} />
+              <FileResult label="更新后的英文混音" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
+            </div>
+          )}
+          {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
+          {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
+        </div>
+        <div className="workflow-card manual-step final-video-step">
+          <p className="eyebrow">步骤 08</p>
           <h2>替换英文音轨并烧录字幕</h2>
           <p>用英文成片混音替换原视频音频，并将受控英文字幕按所选样式烧录到视频中，输出最终英文成片。</p>
           <div className={`step-status ${finalVideo?.status || "blocked"}`}>
@@ -1351,9 +1480,11 @@ function VideoPage({ videos, isLoading }) {
             <small>
               {finalVideo?.status === "running"
                 ? "正在编码视频、烧录字幕并替换音频，页面会自动刷新状态。"
-                : finalVideo?.canRun
-                  ? "受控英文字幕与英文成片混音已齐全，可先生成参考帧确认样式。"
-                  : "需先完成步骤 06 的字幕预检与英文成片混音。"}
+                : finalVideo?.status === "failed"
+                  ? "最终成片上次生成失败，可以查看错误信息后重新生成。"
+                  : finalVideo?.canRun
+                    ? "受控英文字幕与英文成片混音已齐全，可先生成参考帧确认样式。"
+                    : "需先完成步骤 06/07 的字幕预检与英文成片混音。"}
             </small>
           </div>
           {finalVideo?.inputs && (

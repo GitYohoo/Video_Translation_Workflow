@@ -21,11 +21,12 @@ class DubbingSegment:
     role: str
     text: str
     fitted_audio: Path
+    preserve_audio: Path | None = None
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="按字幕时间轴合成英文整轨对白，并可与背景底轨混音。")
-    parser.add_argument("--manifest", required=True, help="IndexTTS2 英文配音清单 CSV")
+    parser.add_argument("--manifest", required=True, help="英文配音清单 CSV")
     parser.add_argument("--output-dir", required=True, help="整轨音频输出目录")
     parser.add_argument("--timeline-reference", help="用于确定整轨总长度的原视频音轨或背景底轨 WAV")
     parser.add_argument("--background", help="可选的 MX+FX 无对白背景底轨 WAV")
@@ -67,6 +68,12 @@ def load_segments(manifest: Path) -> list[DubbingSegment]:
             fitted_audio = (manifest.parent / row["时长适配片段"]).resolve()
             if not fitted_audio.is_file():
                 raise FileNotFoundError(f"找不到第 {row['编号']} 段时长适配配音：{fitted_audio}")
+            preserve_value = row.get("保留原声片段", "").strip()
+            preserve_audio = Path(preserve_value).resolve() if preserve_value else None
+            if preserve_audio and not preserve_audio.is_file():
+                preserve_audio = (manifest.parent / preserve_value).resolve()
+            if preserve_audio and not preserve_audio.is_file():
+                raise FileNotFoundError(f"找不到第 {row['编号']} 段保留原声片段：{preserve_audio}")
             segments.append(
                 DubbingSegment(
                     number=int(row["编号"]),
@@ -77,6 +84,7 @@ def load_segments(manifest: Path) -> list[DubbingSegment]:
                     role=row["角色"],
                     text=row["英文台词"],
                     fitted_audio=fitted_audio,
+                    preserve_audio=preserve_audio,
                 )
             )
     if not segments:
@@ -180,6 +188,89 @@ def assemble_dialogue_track(
     return first_params, total_frames
 
 
+def assemble_preserve_track(
+    segments: list[DubbingSegment],
+    output_path: Path,
+    params: wave._wave_params,
+    total_frames: int,
+) -> bool:
+    preserve_segments = [segment for segment in segments if segment.preserve_audio]
+    if not preserve_segments:
+        return False
+    silent_frame = b"\x00" * params.sampwidth * params.nchannels
+    current_frame = 0
+    with wave.open(str(output_path), "wb") as output:
+        output.setparams(params)
+        for segment in preserve_segments:
+            preserve_audio = segment.preserve_audio
+            if preserve_audio is None:
+                continue
+            preserve_params, segment_frames = audio_params(preserve_audio)
+            validate_pcm(preserve_params, preserve_audio)
+            if (
+                preserve_params.framerate != params.framerate
+                or preserve_params.nchannels != params.nchannels
+                or preserve_params.sampwidth != params.sampwidth
+            ):
+                raise ValueError(f"第 {segment.number} 段保留原声格式与整轨不一致：{preserve_audio}")
+            start_frame = frames_at(segment.start_ms, params.framerate)
+            end_frame = frames_at(segment.end_ms, params.framerate)
+            expected_frames = end_frame - start_frame
+            if start_frame < current_frame:
+                raise ValueError(f"第 {segment.number} 段保留原声与上一段重叠，不能顺序铺轨。")
+            if start_frame > current_frame:
+                output.writeframes(silent_frame * (start_frame - current_frame))
+            frames_to_read = min(segment_frames, expected_frames)
+            with wave.open(str(preserve_audio), "rb") as source:
+                output.writeframes(source.readframes(frames_to_read))
+            if frames_to_read < expected_frames:
+                output.writeframes(silent_frame * (expected_frames - frames_to_read))
+            current_frame = end_frame
+        if total_frames > current_frame:
+            output.writeframes(silent_frame * (total_frames - current_frame))
+    return True
+
+
+def mix_dialogue_layers(
+    voice_path: Path,
+    preserve_path: Path,
+    output_path: Path,
+    preserve_gain: float = 0.75,
+) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise FileNotFoundError("找不到 FFmpeg，无法叠加非语言人声保留层。")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(voice_path),
+            "-i",
+            str(preserve_path),
+            "-filter_complex",
+            (
+                f"[1:a]volume={preserve_gain:.6f}[keep];"
+                "[0:a][keep]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
+                "alimiter=limit=0.98[out]"
+            ),
+            "-map",
+            "[out]",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ],
+        check=True,
+    )
+
+
 def mix_background(
     dialogue_path: Path,
     background_path: Path,
@@ -227,7 +318,7 @@ def mix_background(
 def write_csv(output_path: Path, segments: list[DubbingSegment]) -> None:
     with output_path.open("w", encoding="utf-8-sig", newline="") as output:
         writer = csv.writer(output)
-        writer.writerow(["编号", "开始时间", "结束时间", "时长秒", "角色", "英文台词", "时长适配片段"])
+        writer.writerow(["编号", "开始时间", "结束时间", "时长秒", "角色", "英文台词", "时长适配片段", "保留原声片段"])
         for segment in segments:
             writer.writerow(
                 [
@@ -238,6 +329,7 @@ def write_csv(output_path: Path, segments: list[DubbingSegment]) -> None:
                     segment.role,
                     segment.text,
                     str(segment.fitted_audio),
+                    str(segment.preserve_audio) if segment.preserve_audio else "",
                 ]
             )
 
@@ -269,6 +361,7 @@ def write_html(
         f"<td>{html.escape(segment.start)} - {html.escape(segment.end)}</td>"
         f"<td>{html.escape(segment.role)}</td>"
         f"<td>{html.escape(segment.text)}</td>"
+        f"<td>{'yes' if segment.preserve_audio else 'no'}</td>"
         "</tr>"
         for segment in segments
     )
@@ -293,14 +386,14 @@ def write_html(
   <div class="note">
     <p>配音清单：<code>{html.escape(str(manifest))}</code></p>
     <p>片段数量：<strong>{len(segments)}</strong>；整轨时长：<strong>{duration:.3f}s</strong>；音频格式：{params.framerate} Hz / {params.nchannels} 声道 / {params.sampwidth * 8} bit PCM。</p>
-    <p>每段英文配音严格按照字幕时间窗放置，台词之间的空档保留为静音。</p>
+    <p>每段英文配音严格按照字幕时间窗放置，台词之间的空档保留为静音；带 <code>保留原声片段</code> 的段会按原时间窗额外叠加原声笑声、哭声或喘息。</p>
   </div>
   <h2>英文对白整轨</h2>
   <audio controls preload="metadata" src="{html.escape(dialogue_path.name)}"></audio>
   {mix_section}
   <h2>时间轴明细</h2>
   <table>
-    <thead><tr><th>编号</th><th>时间段</th><th>角色</th><th>英文台词</th></tr></thead>
+    <thead><tr><th>编号</th><th>时间段</th><th>角色</th><th>英文台词</th><th>保留原声</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
 </body>
@@ -316,7 +409,7 @@ def main() -> int:
     timeline_reference = Path(args.timeline_reference).resolve() if args.timeline_reference else None
     background = Path(args.background).resolve() if args.background else None
     if not manifest.is_file():
-        raise FileNotFoundError(f"找不到 IndexTTS2 英文配音清单：{manifest}")
+        raise FileNotFoundError(f"找不到英文配音清单：{manifest}")
     for label, path in (("时间轴参考音轨", timeline_reference), ("背景底轨", background)):
         if path and not path.is_file():
             raise FileNotFoundError(f"找不到{label}：{path}")
@@ -330,7 +423,13 @@ def main() -> int:
         required_outputs(output_dir, args.output_prefix, background is not None), args.overwrite
     )
     segments = load_segments(manifest)
-    params, total_frames = assemble_dialogue_track(segments, dialogue_path, timeline_reference)
+    has_preserve_overlay = any(segment.preserve_audio for segment in segments)
+    voice_path = output_dir / f"{args.output_prefix}_英文对白整轨_仅TTS.wav" if has_preserve_overlay else dialogue_path
+    preserve_path = output_dir / f"{args.output_prefix}_非语言人声保留层.wav"
+    params, total_frames = assemble_dialogue_track(segments, voice_path, timeline_reference)
+    if has_preserve_overlay:
+        assemble_preserve_track(segments, preserve_path, params, total_frames)
+        mix_dialogue_layers(voice_path, preserve_path, dialogue_path)
     print(f"英文对白整轨已生成：{dialogue_path}", flush=True)
     if background and mixed_path:
         mix_background(

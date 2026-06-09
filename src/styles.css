@@ -515,6 +515,59 @@ button {
   color: #996006;
 }
 
+.dubbing-progress {
+  background: #ffffff;
+  border: 1px solid #d8e5ff;
+  border-radius: 12px;
+  box-shadow: 0 8px 22px rgba(58, 112, 255, 0.08);
+  margin: -4px 0 18px;
+  padding: 13px 14px;
+}
+
+.dubbing-progress-head,
+.dubbing-progress-meta {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dubbing-progress-head strong {
+  color: #273247;
+  font-size: 13px;
+}
+
+.dubbing-progress-head span,
+.dubbing-progress-meta {
+  color: #59709a;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dubbing-progress-bar {
+  background: #edf3ff;
+  border-radius: 999px;
+  height: 9px;
+  margin: 10px 0 8px;
+  overflow: hidden;
+}
+
+.dubbing-progress-bar span {
+  background: linear-gradient(90deg, #3a70ff, #75a3ff);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 220ms ease;
+}
+
+.dubbing-progress-detail {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
 .output-root {
   align-items: center;
   display: flex;
@@ -880,6 +933,58 @@ button {
   border-color: #d9e4f5;
 }
 
+.redub-step {
+  border-color: #d7e7de;
+}
+
+.single-redub-panel {
+  align-items: end;
+  background: #f7fbf8;
+  border: 1px solid #dfece4;
+  border-radius: 12px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(170px, 260px) auto;
+  justify-content: start;
+  margin: 21px 0 20px;
+  padding: 16px;
+}
+
+.single-redub-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.single-redub-field span {
+  color: #526076;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.single-redub-field input {
+  background: #fff;
+  border: 1px solid #d9e1ed;
+  border-radius: 8px;
+  color: #243047;
+  font: inherit;
+  height: 42px;
+  min-width: 0;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.single-redub-field input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.single-redub-action {
+  height: 42px;
+  margin: 0;
+  min-width: 160px;
+}
+
 .final-input-results {
   display: grid;
   grid-template-columns: repeat(3, minmax(180px, 1fr));
@@ -1238,6 +1343,7 @@ button {
   }
 
   .final-input-results,
+  .single-redub-panel,
   .style-controls,
   .preview-grid,
   .subtitle-editor-header,

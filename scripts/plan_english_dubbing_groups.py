@@ -15,10 +15,84 @@ TIME_PATTERN = re.compile(
     r"(?P<end>\d{2}:\d{2}:\d{2}[,.]\d{3})"
 )
 SPEAKER_PATTERN = re.compile(r"^\[(?P<speaker>[^\]]+)\]\s*(?P<line>.*)$", re.DOTALL)
-SHORT_UTTERANCE_PATTERN = re.compile(
-    r"^(oh|ah|uh|um|hm+|huh|yes|no|ok|okay|thanks?|thank you|right|fine|well|hey)[,.!?\s]*$",
+NON_SPEECH_PATTERN = re.compile(
+    r"(哈哈+|呵呵+|大笑|笑声|冷笑|哭声|哭泣|抽泣|喘息|喘气|尖叫|咳嗽|叹气|"
+    r"\b(laughs?|laughter|chuckles?|giggles?|crying|sobbing|breath(?:ing)?|gasps?|"
+    r"screams?|coughs?|sighs?|non[-\s]?speech|keep original)\b)",
     re.IGNORECASE,
 )
+PRESERVE_ORIGINAL = "preserve_original"
+TTS_SEGMENT = "tts"
+
+
+def has_non_speech_marker(text: str) -> bool:
+    return bool(NON_SPEECH_PATTERN.search(text or ""))
+
+
+def strip_non_speech_markers(text: str) -> str:
+    cleaned = re.sub(
+        r"\[([^\]]*(?:laugh|laughter|chuckle|giggle|cry|sob|breath|gasp|scream|cough|sigh)[^\]]*)\]",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\b(?:laughs?|laughter|chuckles?|giggles?|crying|sobbing|breath(?:ing)?|gasps?|screams?|coughs?|sighs?)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"(哈哈+|呵呵+|大笑|笑声|冷笑|哭声|哭泣|抽泣|喘息|喘气|尖叫|咳嗽|叹气)", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return re.sub(r"\s+([,.!?;:])", r"\1", cleaned)
+
+
+def segment_type_and_tts_text(text: str, explicit_type: object = "") -> tuple[str, str, bool]:
+    raw = str(explicit_type or "").strip().lower().replace("-", "_").replace(" ", "_")
+    has_marker = has_non_speech_marker(text)
+    tts_text = strip_non_speech_markers(text) if has_marker else text.strip()
+    if raw in {
+        PRESERVE_ORIGINAL,
+        "non_speech",
+        "non_speech_vocal",
+        "sfx_laugh",
+        "laugh",
+        "laughter",
+        "crying",
+        "breathing",
+        "scream",
+        "sfx",
+        "keep_original",
+        "original",
+    } and not tts_text:
+        return PRESERVE_ORIGINAL, text.strip(), True
+    if not tts_text and has_marker:
+        return PRESERVE_ORIGINAL, text.strip(), True
+    return TTS_SEGMENT, tts_text or text.strip(), False
+
+
+def normalize_segment_type(value: object = "", text: str = "") -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in {
+        PRESERVE_ORIGINAL,
+        "non_speech",
+        "non_speech_vocal",
+        "sfx_laugh",
+        "laugh",
+        "laughter",
+        "crying",
+        "breathing",
+        "scream",
+        "sfx",
+        "keep_original",
+        "original",
+    }:
+        return PRESERVE_ORIGINAL
+    if raw in {TTS_SEGMENT, "speech", "dialogue", "dialog"}:
+        return TTS_SEGMENT
+    if has_non_speech_marker(text or "") and not strip_non_speech_markers(text or ""):
+        return PRESERVE_ORIGINAL
+    return TTS_SEGMENT
 
 
 @dataclass(frozen=True)
@@ -30,6 +104,8 @@ class Cue:
     end_ms: int
     speaker: str
     text: str
+    segment_type: str = TTS_SEGMENT
+    preserve_original: bool = False
 
 
 @dataclass(frozen=True)
@@ -42,21 +118,19 @@ class DubbingGroup:
     end_ms: int
     speaker: str
     text: str
+    segment_type: str
+    preserve_original: bool
     reason: str
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="根据英文显示字幕生成用于 TTS 的英文配音句群清单。")
+    parser = argparse.ArgumentParser(description="根据英文显示字幕生成逐段 TTS 配音分段计划。")
     parser.add_argument("--subtitle", help="逐条显示用英文 SRT；不传时从 Gemini JSON 的 display_subtitles 读取")
-    parser.add_argument("--gemini-json", help="Gemini 翻译阶段输出的 JSON，需包含 dubbing_groups")
+    parser.add_argument("--gemini-json", help="Gemini 翻译阶段输出的 JSON，需包含 display_subtitles")
     parser.add_argument("--output-subtitle", help="可选：从 Gemini JSON 写出逐条显示用英文 SRT")
-    parser.add_argument("--output-csv", required=True, help="输出配音句群 CSV")
-    parser.add_argument("--output-json", required=True, help="输出规范化配音句群 JSON")
-    parser.add_argument("--output-html", required=True, help="输出句群规划 HTML 报告")
-    parser.add_argument("--max-gap-ms", type=int, default=800, help="自动句群相邻字幕最大间隔，默认 800ms")
-    parser.add_argument("--max-duration-ms", type=int, default=7000, help="自动句群最长时长，默认 7000ms")
-    parser.add_argument("--max-chars", type=int, default=220, help="自动句群最长英文字符数，默认 220")
-    parser.add_argument("--max-cues", type=int, default=5, help="自动句群最多包含字幕条数，默认 5")
+    parser.add_argument("--output-csv", required=True, help="输出逐段配音计划 CSV")
+    parser.add_argument("--output-json", required=True, help="输出规范化逐段配音计划 JSON")
+    parser.add_argument("--output-html", required=True, help="输出逐段配音计划 HTML 报告")
     return parser.parse_args()
 
 
@@ -79,11 +153,14 @@ def srt_time(milliseconds: int) -> str:
 
 
 def split_speaker(text: str) -> tuple[str, str]:
-    match = SPEAKER_PATTERN.match(text.strip())
+    stripped = text.strip()
+    match = SPEAKER_PATTERN.match(stripped)
     if not match:
-        return "未标注", text.strip()
+        return "未标注", stripped
     speaker = match.group("speaker").strip() or "未标注"
     line = match.group("line").strip()
+    if not line and NON_SPEECH_PATTERN.search(speaker):
+        return "未标注", stripped
     return speaker, line
 
 
@@ -110,7 +187,8 @@ def load_srt(path: Path) -> list[Cue]:
         speaker, text = split_speaker("\n".join(line.strip() for line in lines[2:]).strip())
         if not text:
             raise ValueError(f"SRT 第 {number} 段没有英文正文。")
-        cues.append(Cue(number, start, end, start_ms, end_ms, speaker, text))
+        segment_type, tts_text, preserve_original = segment_type_and_tts_text(text)
+        cues.append(Cue(number, start, end, start_ms, end_ms, speaker, tts_text, segment_type, preserve_original))
     if not cues:
         raise ValueError("英文 SRT 没有字幕条目。")
     for previous, current in zip(cues, cues[1:]):
@@ -143,7 +221,11 @@ def load_display_subtitles_from_gemini(path: Path) -> list[Cue]:
             speaker = speaker_from_text
         if not text:
             raise ValueError(f"display_subtitles 第 {number} 段没有英文正文。")
-        cues.append(Cue(number, start, end, start_ms, end_ms, speaker, text))
+        segment_type, tts_text, preserve_original = segment_type_and_tts_text(
+            text,
+            item.get("segment_type") or item.get("type"),
+        )
+        cues.append(Cue(number, start, end, start_ms, end_ms, speaker, tts_text, segment_type, preserve_original))
     for previous, current in zip(cues, cues[1:]):
         if current.start_ms < previous.start_ms:
             raise ValueError(f"display_subtitles 时间顺序错误：第 {current.number} 段早于第 {previous.number} 段。")
@@ -162,65 +244,25 @@ def write_display_srt(path: Path, cues: list[Cue]) -> None:
 def combined_text(cues: list[Cue]) -> str:
     text = " ".join(cue.text.strip() for cue in cues)
     text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"\s+([,.!?;:])", r"\1", text)
-    return text
+    return re.sub(r"\s+([,.!?;:])", r"\1", text)
 
 
-def should_merge(
-    current_group: list[Cue],
-    candidate: Cue,
-    max_gap_ms: int,
-    max_duration_ms: int,
-    max_chars: int,
-    max_cues: int,
-) -> tuple[bool, str]:
-    previous = current_group[-1]
-    if candidate.speaker != previous.speaker:
-        return False, "角色变化"
-    gap = candidate.start_ms - previous.end_ms
-    if gap > max_gap_ms:
-        return False, f"停顿 {gap}ms 超过阈值"
-    merged = current_group + [candidate]
-    duration = candidate.end_ms - current_group[0].start_ms
-    if duration > max_duration_ms:
-        return False, "句群时长超过上限"
-    if len(combined_text(merged)) > max_chars:
-        return False, "句群文本长度超过上限"
-    if len(merged) > max_cues:
-        return False, "句群字幕条数超过上限"
-    if SHORT_UTTERANCE_PATTERN.match(previous.text) or SHORT_UTTERANCE_PATTERN.match(candidate.text):
-        return True, "同角色短语气词合并"
-    return True, "同角色连续台词且停顿较短"
-
-
-def auto_groups(cues: list[Cue], args: argparse.Namespace) -> list[DubbingGroup]:
-    groups: list[DubbingGroup] = []
-    current: list[Cue] = [cues[0]]
-    reason = "单条字幕"
-    for cue in cues[1:]:
-        ok, merge_reason = should_merge(
-            current,
-            cue,
-            args.max_gap_ms,
-            args.max_duration_ms,
-            args.max_chars,
-            args.max_cues,
-        )
-        if ok:
-            current.append(cue)
-            reason = merge_reason
-            continue
-        groups.append(make_group(len(groups) + 1, current, reason))
-        current = [cue]
-        reason = "单条字幕"
-    groups.append(make_group(len(groups) + 1, current, reason))
-    return groups
-
-
-def make_group(group_id: int, cues: list[Cue], reason: str, text: str | None = None) -> DubbingGroup:
+def make_group(
+    group_id: int,
+    cues: list[Cue],
+    reason: str,
+    text: str | None = None,
+    segment_type: str | None = None,
+) -> DubbingGroup:
     speakers = {cue.speaker for cue in cues}
     if len(speakers) != 1:
-        raise ValueError(f"配音句群 {group_id} 跨角色：{', '.join(sorted(speakers))}")
+        raise ValueError(f"配音整句分段 {group_id} 跨说话人：{', '.join(sorted(speakers))}")
+    current_text = text or combined_text(cues)
+    normalized_type, tts_text, preserve_original = segment_type_and_tts_text(
+        current_text,
+        segment_type or (PRESERVE_ORIGINAL if all(cue.segment_type == PRESERVE_ORIGINAL for cue in cues) else TTS_SEGMENT),
+    )
+    preserve_original = preserve_original or any(cue.preserve_original for cue in cues)
     return DubbingGroup(
         group_id=group_id,
         cue_numbers=[cue.number for cue in cues],
@@ -229,22 +271,18 @@ def make_group(group_id: int, cues: list[Cue], reason: str, text: str | None = N
         start_ms=cues[0].start_ms,
         end_ms=cues[-1].end_ms,
         speaker=cues[0].speaker,
-        text=(text or combined_text(cues)).strip(),
+        text=tts_text.strip(),
+        segment_type=normalized_type,
+        preserve_original=preserve_original,
         reason=reason,
     )
 
 
-def split_by_speaker(cues: list[Cue]) -> list[list[Cue]]:
-    chunks: list[list[Cue]] = []
-    current: list[Cue] = []
-    for cue in cues:
-        if current and cue.speaker != current[-1].speaker:
-            chunks.append(current)
-            current = []
-        current.append(cue)
-    if current:
-        chunks.append(current)
-    return chunks
+def per_cue_groups(cues: list[Cue], reason: str = "逐条分段：每段单独使用原始 DX 对白参考音色") -> list[DubbingGroup]:
+    return [
+        make_group(index, [cue], reason)
+        for index, cue in enumerate(cues, start=1)
+    ]
 
 
 def cue_numbers_from_group(raw_group: dict) -> list[int]:
@@ -264,11 +302,27 @@ def cue_numbers_from_group(raw_group: dict) -> list[int]:
     return [int(value) for value in values]
 
 
-def groups_from_gemini(path: Path, cues: list[Cue], use_gemini_text: bool) -> list[DubbingGroup]:
+def split_by_speaker(cues: list[Cue]) -> list[list[Cue]]:
+    chunks: list[list[Cue]] = []
+    current: list[Cue] = []
+    for cue in cues:
+        if current and cue.speaker != current[-1].speaker:
+            chunks.append(current)
+            current = []
+        current.append(cue)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def groups_from_gemini(path: Path, cues: list[Cue]) -> list[DubbingGroup] | None:
     data = json.loads(path.read_text(encoding="utf-8-sig"))
     raw_groups = data.get("dubbing_groups") if isinstance(data, dict) else None
-    if not isinstance(raw_groups, list) or not raw_groups:
-        raise ValueError("Gemini JSON 必须包含非空 dubbing_groups 数组。")
+    if not raw_groups:
+        return None
+    if not isinstance(raw_groups, list):
+        raise ValueError("Gemini JSON 中的 dubbing_groups 必须是数组。")
+
     by_number = {cue.number: cue for cue in cues}
     groups: list[DubbingGroup] = []
     used: list[int] = []
@@ -278,10 +332,10 @@ def groups_from_gemini(path: Path, cues: list[Cue], use_gemini_text: bool) -> li
             raise ValueError(f"dubbing_groups 第 {index} 项必须是对象。")
         numbers = cue_numbers_from_group(raw_group)
         if numbers != sorted(numbers):
-            raise ValueError(f"Gemini 句群 {index} 的字幕编号必须按升序填写。")
+            raise ValueError(f"Gemini 整句分段 {index} 的字幕编号必须按升序填写。")
         if any(current + 1 != nxt for current, nxt in zip(numbers, numbers[1:])):
-            raise ValueError(f"Gemini 句群 {index} 只能引用连续字幕编号：{numbers}")
-        group_cues = []
+            raise ValueError(f"Gemini 整句分段 {index} 只能引用连续字幕编号：{numbers}")
+        group_cues: list[Cue] = []
         for number in numbers:
             cue = by_number.get(number)
             if cue is None:
@@ -290,26 +344,31 @@ def groups_from_gemini(path: Path, cues: list[Cue], use_gemini_text: bool) -> li
             group_cues.append(cue)
         if not group_cues:
             continue
-        text = str(raw_group.get("text") or "").strip() if use_gemini_text else ""
-        reason = str(raw_group.get("merge_reason") or "Gemini 句群规划").strip()
+        reason = str(raw_group.get("merge_reason") or raw_group.get("segment_reason") or "Gemini 整句分段建议").strip()
         missing_in_group = [number for number in numbers if number not in by_number]
         if missing_in_group:
             reason = f"{reason}；忽略已跳过字幕 {','.join(str(number) for number in missing_in_group)}"
         chunks = split_by_speaker(group_cues)
         if len(chunks) > 1:
-            reason = f"{reason}；因角色变化拆分"
+            reason = f"{reason}；因说话人变化拆分"
+        raw_segment_type = raw_group.get("segment_type") or raw_group.get("type")
+        segment_type = (
+            normalize_segment_type(raw_segment_type, str(raw_group.get("text", "")))
+            if raw_segment_type
+            else None
+        )
         for chunk in chunks:
-            chunk_text = text if use_gemini_text and len(chunks) == 1 else None
-            groups.append(make_group(len(groups) + 1, chunk, reason, chunk_text))
+            groups.append(make_group(len(groups) + 1, chunk, reason, None, segment_type))
         used.extend(cue.number for cue in group_cues)
+
     expected = [cue.number for cue in cues]
     if sorted(used) != expected:
         missing = sorted(set(expected) - set(used))
         duplicated = sorted(number for number in set(used) if used.count(number) > 1)
-        raise ValueError(f"Gemini 句群必须完整且仅覆盖一次显示字幕。缺失：{missing}；重复：{duplicated}")
+        raise ValueError(f"Gemini 整句分段必须完整且仅覆盖一次可配音字幕。缺失：{missing}；重复：{duplicated}")
     if ignored_missing:
         ignored = ",".join(str(number) for number in sorted(set(ignored_missing)))
-        print(f"已忽略 Gemini 句群中不参与配音的跳过字幕：{ignored}", flush=True)
+        print(f"已忽略 Gemini 分段中不参与配音的跳过字幕：{ignored}", flush=True)
     return groups
 
 
@@ -317,7 +376,7 @@ def write_csv(path: Path, groups: list[DubbingGroup]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as output:
         writer = csv.writer(output)
-        writer.writerow(["编号", "原字幕编号", "开始时间", "结束时间", "时长秒", "说话人", "英文台词", "合并原因"])
+        writer.writerow(["编号", "原字幕编号", "开始时间", "结束时间", "时长秒", "说话人", "段类型", "保留原声", "英文台词", "合并原因"])
         for group in groups:
             writer.writerow(
                 [
@@ -327,6 +386,8 @@ def write_csv(path: Path, groups: list[DubbingGroup]) -> None:
                     group.end,
                     f"{(group.end_ms - group.start_ms) / 1000:.3f}",
                     group.speaker,
+                    group.segment_type,
+                    "yes" if group.preserve_original else "no",
                     group.text,
                     group.reason,
                 ]
@@ -343,6 +404,8 @@ def write_json(path: Path, cues: list[Cue], groups: list[DubbingGroup]) -> None:
                 "end": cue.end,
                 "speaker": cue.speaker,
                 "text": cue.text,
+                "segment_type": cue.segment_type,
+                "preserve_original": cue.preserve_original,
             }
             for cue in cues
         ],
@@ -354,7 +417,9 @@ def write_json(path: Path, cues: list[Cue], groups: list[DubbingGroup]) -> None:
                 "end": group.end,
                 "speaker": group.speaker,
                 "text": group.text,
-                "merge_reason": group.reason,
+                "segment_type": group.segment_type,
+                "preserve_original": group.preserve_original,
+                "segment_reason": group.reason,
             }
             for group in groups
         ],
@@ -371,6 +436,8 @@ def write_html(path: Path, subtitle: Path, groups: list[DubbingGroup], source: s
         f"<td>{html.escape(group.start)} - {html.escape(group.end)}</td>"
         f"<td>{(group.end_ms - group.start_ms) / 1000:.3f}s</td>"
         f"<td>{html.escape(group.speaker)}</td>"
+        f"<td>{html.escape(group.segment_type)}</td>"
+        f"<td>{'yes' if group.preserve_original else 'no'}</td>"
         f"<td>{html.escape(group.text)}</td>"
         f"<td>{html.escape(group.reason)}</td>"
         "</tr>"
@@ -380,7 +447,7 @@ def write_html(path: Path, subtitle: Path, groups: list[DubbingGroup], source: s
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <title>英文配音句群规划</title>
+  <title>英文配音分段计划</title>
   <style>
     body {{ max-width: 1400px; margin: 28px auto; padding: 0 22px; font-family: "Microsoft YaHei", Arial, sans-serif; color: #111827; line-height: 1.55; }}
     .note {{ background: #eff6ff; border-left: 4px solid #2563eb; padding: 12px 16px; margin: 18px 0; }}
@@ -392,14 +459,14 @@ def write_html(path: Path, subtitle: Path, groups: list[DubbingGroup], source: s
   </style>
 </head>
 <body>
-  <h1>英文配音句群规划</h1>
+  <h1>英文配音分段计划</h1>
   <div class="note">
     <p>显示字幕：<code>{html.escape(str(subtitle))}</code></p>
     <p>规划来源：<strong>{html.escape(source)}</strong></p>
-    <p>配音句群：<strong>{len(groups)}</strong> 段。字幕显示仍保持逐条时间轴，TTS 只使用本句群清单。</p>
+    <p>配音分段：<strong>{len(groups)}</strong> 段。<code>tts</code> 段单独切割原始 DX 对白轨作为参考音色；<code>preserve_original</code> 段跳过 TTS，后续铺回原始非语言人声。</p>
   </div>
   <table>
-    <thead><tr><th>句群</th><th>原字幕编号</th><th>时间段</th><th>时长</th><th>角色</th><th>配音文本</th><th>原因</th></tr></thead>
+    <thead><tr><th>分段</th><th>原字幕编号</th><th>时间段</th><th>时长</th><th>角色</th><th>段类型</th><th>保留原声</th><th>配音文本</th><th>原因</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
 </body>
@@ -415,7 +482,7 @@ def main() -> int:
     if subtitle and not subtitle.is_file():
         raise FileNotFoundError(f"找不到英文显示字幕：{subtitle}")
     if gemini_json and not gemini_json.is_file():
-        raise FileNotFoundError(f"找不到 Gemini 句群 JSON：{gemini_json}")
+        raise FileNotFoundError(f"找不到 Gemini 整句分段 JSON：{gemini_json}")
     if subtitle:
         cues = load_srt(subtitle)
     elif gemini_json:
@@ -428,18 +495,18 @@ def main() -> int:
         raise ValueError("必须传入 --subtitle，或传入包含 display_subtitles 的 --gemini-json。")
     if args.output_subtitle and subtitle and not Path(args.output_subtitle).resolve().is_file():
         write_display_srt(Path(args.output_subtitle).resolve(), cues)
-    if args.gemini_json:
-        groups = groups_from_gemini(gemini_json, cues, use_gemini_text=not bool(args.subtitle))
-        source = f"Gemini JSON：{gemini_json}"
+    groups = groups_from_gemini(gemini_json, cues) if gemini_json else None
+    if groups:
+        source = f"Gemini 整句分段建议：{gemini_json}"
     else:
-        groups = auto_groups(cues, args)
-        source = "自动兜底规则"
+        groups = per_cue_groups(cues, "无 Gemini 整句建议，退回逐条分段")
+        source = "逐条分段兜底规则"
     write_csv(Path(args.output_csv).resolve(), groups)
     write_json(Path(args.output_json).resolve(), cues, groups)
     write_html(Path(args.output_html).resolve(), subtitle, groups, source)
-    print(f"英文显示字幕：{len(cues)} 条；配音句群：{len(groups)} 段。", flush=True)
-    print(f"句群 CSV：{Path(args.output_csv).resolve()}", flush=True)
-    print(f"句群 HTML：{Path(args.output_html).resolve()}", flush=True)
+    print(f"英文显示字幕：{len(cues)} 条；配音分段：{len(groups)} 段。", flush=True)
+    print(f"分段计划 CSV：{Path(args.output_csv).resolve()}", flush=True)
+    print(f"分段计划 HTML：{Path(args.output_html).resolve()}", flush=True)
     return 0
 
 

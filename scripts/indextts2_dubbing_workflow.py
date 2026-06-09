@@ -15,6 +15,8 @@ from typing import TextIO
 
 
 INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+PRESERVE_ORIGINAL = "preserve_original"
+TTS_SEGMENT = "tts"
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,12 @@ class Segment:
     text: str
     source_audio: Path
     role: str
+    segment_type: str = TTS_SEGMENT
+    preserve_audio: Path | None = None
+
+    @property
+    def should_synthesize(self) -> bool:
+        return self.segment_type != PRESERVE_ORIGINAL
 
 
 def parse_args() -> argparse.Namespace:
@@ -110,8 +118,10 @@ def load_role_overrides(path: Path | None) -> dict[str, str]:
     return data
 
 
-def resolved_role(speaker: str, number: int, overrides: dict[str, str]) -> str:
+def resolved_role(speaker: str, number: int, overrides: dict[str, str], per_segment_role: bool = False) -> str:
     specific_key = f"{speaker}#{number:03d}"
+    if per_segment_role:
+        return overrides.get(specific_key, specific_key)
     if specific_key in overrides:
         return overrides[specific_key]
     if speaker in overrides:
@@ -121,7 +131,7 @@ def resolved_role(speaker: str, number: int, overrides: dict[str, str]) -> str:
     return speaker
 
 
-def load_segments(manifest: Path, overrides: dict[str, str]) -> list[Segment]:
+def load_segments(manifest: Path, overrides: dict[str, str], per_segment_role: bool = False) -> list[Segment]:
     segments: list[Segment] = []
     with manifest.open("r", encoding="utf-8-sig", newline="") as source:
         for row in csv.DictReader(source):
@@ -129,6 +139,14 @@ def load_segments(manifest: Path, overrides: dict[str, str]) -> list[Segment]:
             source_audio = (manifest.parent / row["音频文件"]).resolve()
             if not source_audio.is_file():
                 raise FileNotFoundError(f"找不到第 {number} 段原对白片段：{source_audio}")
+            segment_type = row.get("段类型", TTS_SEGMENT).strip() or TTS_SEGMENT
+            if segment_type not in {TTS_SEGMENT, PRESERVE_ORIGINAL}:
+                segment_type = TTS_SEGMENT
+            preserve_audio_value = row.get("保留原声文件", "").strip()
+            preserve_audio = (manifest.parent / preserve_audio_value).resolve() if preserve_audio_value else None
+            if segment_type == PRESERVE_ORIGINAL:
+                if preserve_audio is None or not preserve_audio.is_file():
+                    raise FileNotFoundError(f"找不到第 {number} 段保留原声片段：{preserve_audio_value}")
             segments.append(
                 Segment(
                     number=number,
@@ -138,7 +156,9 @@ def load_segments(manifest: Path, overrides: dict[str, str]) -> list[Segment]:
                     speaker=row["说话人"],
                     text=row["英文台词"].strip(),
                     source_audio=source_audio,
-                    role=resolved_role(row["说话人"], number, overrides),
+                    role=resolved_role(row["说话人"], number, overrides, per_segment_role),
+                    segment_type=segment_type,
+                    preserve_audio=preserve_audio,
                 )
             )
     if not segments:
@@ -230,6 +250,8 @@ def prepare_references(
     references_dir = output_dir / "参考音色"
     groups: dict[str, list[Segment]] = {}
     for segment in segments:
+        if not segment.should_synthesize:
+            continue
         groups.setdefault(segment.role, []).append(segment)
     references: dict[str, Path] = {}
     selected: dict[str, list[int]] = {}
@@ -260,9 +282,15 @@ def write_role_plan(
             "字幕编号": [segment.number for segment in role_segments],
         }
     data = {
-        "说明": "同一角色始终使用同一参考音色。未标注条目默认拆分，需合并时可通过角色映射 JSON 指定。",
+        "说明": "默认同一角色使用固定音色；启用逐段参考模式时，每个分段使用自己的原始 DX 对白片段作为参考音色。",
         "角色": roles,
-        "逐段角色": {f"{segment.number:03d}": segment.role for segment in segments},
+        "逐段角色": {
+            f"{segment.number:03d}": {
+                "角色": segment.role,
+                "段类型": segment.segment_type,
+            }
+            for segment in segments
+        },
     }
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
@@ -328,10 +356,12 @@ def write_result_csv(output_dir: Path, result_rows: list[dict]) -> Path:
         "结束时间",
         "目标时长秒",
         "角色",
+        "生成方式",
         "参考音色",
         "英文台词",
         "原始合成",
         "时长适配片段",
+        "保留原声片段",
         "原始时长秒",
         "变速系数",
     ]
@@ -363,6 +393,7 @@ def write_result_html(
             "<tr>"
             f"<td>{segment.number:03d}</td>"
             f"<td>{html.escape(segment.role)}</td>"
+            f"<td>{html.escape(segment.segment_type)}</td>"
             f"<td>{html.escape(segment.start)} - {html.escape(segment.end)}</td>"
             f"<td>{segment.duration:.3f}s</td>"
             f"<td>{html.escape(segment.text)}</td>"
@@ -399,8 +430,8 @@ def write_result_html(
   <h1>IndexTTS2 英文配音结果</h1>
   <div class="note">
     <p>模型：<code>{html.escape(str(model_dir))}</code></p>
-    <p>角色数量：<strong>{len(references)}</strong>；字幕片段：<strong>{len(segments)}</strong>；已生成：<strong>{len(result_rows)}</strong>。</p>
-    <p>音色由角色固定参考音频控制；输出片段已通过 FFmpeg 时长适配为字幕原始时间窗长度。</p>
+    <p>角色数量：<strong>{len(references)}</strong>；字幕片段：<strong>{len(segments)}</strong>；已生成或保留：<strong>{len(result_rows)}</strong>。</p>
+    <p><code>tts</code> 段由角色固定参考音频控制；<code>preserve_original</code> 段跳过 TTS，直接铺回原始非语言人声。输出片段均会通过 FFmpeg 时长适配为字幕原始时间窗长度。</p>
   </div>
   <h2>角色参考音色</h2>
   <table>
@@ -409,7 +440,7 @@ def write_result_html(
   </table>
   <h2>逐段英文配音</h2>
   <table>
-    <thead><tr><th>编号</th><th>角色</th><th>时间段</th><th>目标时长</th><th>英文台词</th><th>变速系数</th><th>适配后试听</th></tr></thead>
+    <thead><tr><th>编号</th><th>角色</th><th>段类型</th><th>时间段</th><th>目标时长</th><th>英文台词</th><th>变速系数</th><th>适配后试听</th></tr></thead>
     <tbody>{''.join(table_rows)}</tbody>
   </table>
 </body>
@@ -450,6 +481,7 @@ def generate_dubbing(
     needs_synthesis = args.overwrite or any(
         not reusable_raw_audio(segment, raw_dir / f"{segment.number:03d}_{safe_name(segment.role)}.wav")
         for segment in selected
+        if segment.should_synthesize
     )
     tts = None
     if needs_synthesis:
@@ -472,7 +504,16 @@ def generate_dubbing(
         filename = f"{segment.number:03d}_{safe_name(segment.role)}.wav"
         raw_path = raw_dir / filename
         fitted_path = fitted_dir / filename
-        if reusable_raw_audio(segment, raw_path):
+        if not segment.should_synthesize:
+            if segment.preserve_audio is None:
+                raise FileNotFoundError(f"第 {segment.number:03d} 段缺少保留原声片段。")
+            fitted_duration = audio_duration(fitted_path) if fitted_path.exists() else None
+            if args.overwrite or fitted_duration is None or abs(fitted_duration - segment.duration) > 0.001:
+                speed_factor = fit_duration(ffmpeg, segment.preserve_audio, fitted_path, segment.duration)
+            else:
+                speed_factor = audio_duration(segment.preserve_audio) / segment.duration
+            print(f"[{index}/{len(selected)}] 保留原声第 {segment.number:03d} 段：{fitted_path.name}", flush=True)
+        elif reusable_raw_audio(segment, raw_path):
             fitted_duration = audio_duration(fitted_path) if fitted_path.exists() else None
             if fitted_duration is None or abs(fitted_duration - segment.duration) > 0.001:
                 speed_factor = fit_duration(ffmpeg, raw_path, fitted_path, segment.duration)
@@ -512,11 +553,13 @@ def generate_dubbing(
                 "结束时间": segment.end,
                 "目标时长秒": f"{segment.duration:.3f}",
                 "角色": segment.role,
-                "参考音色": str(references[segment.role]),
+                "生成方式": "tts" if segment.should_synthesize else PRESERVE_ORIGINAL,
+                "参考音色": str(references[segment.role]) if segment.should_synthesize else "",
                 "英文台词": segment.text,
-                "原始合成": f"原始合成/{raw_path.name}",
+                "原始合成": f"原始合成/{raw_path.name}" if segment.should_synthesize else str(segment.preserve_audio),
                 "时长适配片段": f"时长适配片段/{fitted_path.name}",
-                "原始时长秒": f"{audio_duration(raw_path):.3f}",
+                "保留原声片段": str(segment.preserve_audio) if segment.should_synthesize and segment.preserve_audio else "",
+                "原始时长秒": f"{audio_duration(raw_path if segment.should_synthesize else fitted_path):.3f}",
                 "变速系数": f"{speed_factor:.4f}",
             }
         )
