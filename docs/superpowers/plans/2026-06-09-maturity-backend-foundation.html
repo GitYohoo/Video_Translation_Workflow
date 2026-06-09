@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>成熟化后端基础实施计划</title>
+  <style>
+    body { color: #1f2937; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; line-height: 1.75; margin: 32px auto; max-width: 1040px; padding: 0 24px; }
+    h1, h2 { color: #111827; line-height: 1.25; }
+    code { background: #f3f4f6; border-radius: 4px; padding: 2px 5px; }
+    .task { border: 1px solid #d1d5db; border-radius: 8px; margin: 18px 0; padding: 16px 18px; }
+    .commit { color: #065f46; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>成熟化后端基础实施计划</h1>
+  <p><strong>目标：</strong>第一批成熟化改造先抽出 catalog 和 job store，并迁移一个后台流程作为样板。</p>
+  <p><strong>架构：</strong>保留 Express 入口，新增小模块承接文件存储职责；每一步先写 Node 测试，再实现，再提交。</p>
+  <p><strong>技术栈：</strong>Express、Node fs/promises、Node 内置 test runner、Vite。</p>
+
+  <section class="task">
+    <h2>任务 1：Catalog 数据访问模块</h2>
+    <ul>
+      <li>新增 <code>server/catalog-store.js</code>，提供 <code>loadCatalog</code>、<code>writeCatalog</code>、<code>findVideoById</code>、<code>sortedVideos</code>。</li>
+      <li>新增 <code>tests/catalog-store.test.mjs</code>，验证空文件、原子写入、排序、查找。</li>
+      <li>把 <code>server/index.js</code> 中 catalog 读写调用切到模块。</li>
+      <li class="commit">提交：<code>refactor: extract catalog store</code></li>
+    </ul>
+  </section>
+
+  <section class="task">
+    <h2>任务 2：Job Store 基础模块</h2>
+    <ul>
+      <li>新增 <code>server/job-store.js</code>，提供 <code>jobIdFor</code>、<code>readJob</code>、<code>writeJob</code>、<code>startJob</code>、<code>finishJob</code>、<code>failJob</code>。</li>
+      <li>新增 <code>tests/job-store.test.mjs</code>，验证稳定 job id、状态持久化、失败信息写入。</li>
+      <li>保持 job 文件在 <code>data/jobs</code>，不影响已有日志文件。</li>
+      <li class="commit">提交：<code>feat: add persistent job store</code></li>
+    </ul>
+  </section>
+
+  <section class="task">
+    <h2>任务 3：BS-RoFormer 任务状态样板迁移</h2>
+    <ul>
+      <li>服务启动时创建 <code>data/jobs</code>。</li>
+      <li>BS-RoFormer 启动时写入 running job，完成或失败时写入 completed/failed。</li>
+      <li><code>bsRoformerStatus</code> 优先合并内存运行任务，其次读取持久化 job 的时间和错误。</li>
+      <li class="commit">提交：<code>feat: persist bs roformer job state</code></li>
+    </ul>
+  </section>
+
+  <section class="task">
+    <h2>任务 4：验证</h2>
+    <ul>
+      <li>运行 <code>npm run test:node</code>。</li>
+      <li>运行 <code>npm run build</code>。</li>
+      <li>刷新本地页面，确认项目列表和详情页仍可渲染。</li>
+    </ul>
+  </section>
+</body>
+</html>

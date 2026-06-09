@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>成熟化改造第一阶段：后端基础设计</title>
+  <style>
+    body { color: #1f2937; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; line-height: 1.75; margin: 32px auto; max-width: 980px; padding: 0 24px; }
+    h1, h2 { color: #111827; line-height: 1.25; }
+    code { background: #f3f4f6; border-radius: 4px; padding: 2px 5px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #d1d5db; padding: 9px 11px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; }
+    .note { background: #f0fdf4; border-left: 4px solid #16a34a; padding: 12px 16px; }
+  </style>
+</head>
+<body>
+  <h1>成熟化改造第一阶段：后端基础设计</h1>
+  <p class="note">目标：先把后端从“一个大文件能跑”推进到“有清晰数据访问边界和可持久化任务状态”的结构，为后续设置页、任务恢复、前端拆分打基础。</p>
+
+  <h2>本阶段范围</h2>
+  <table>
+    <thead>
+      <tr><th>模块</th><th>本阶段做什么</th><th>暂不做什么</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Catalog</td>
+        <td>抽出视频项目目录读写模块，集中处理 <code>videos.json</code>、排序、查找、原子写入。</td>
+        <td>不引入数据库，不改变现有 <code>videos.json</code> 位置。</td>
+      </tr>
+      <tr>
+        <td>Job Store</td>
+        <td>新增 <code>data/jobs</code> 下的任务状态读写模块，定义稳定 job id、状态字段和日志路径。</td>
+        <td>不一次迁移所有工作流，只先完成基础能力和一个样板流程。</td>
+      </tr>
+      <tr>
+        <td>Workflow 样板</td>
+        <td>先把 BS-RoFormer 任务状态接到 job store，保留内存任务兼容运行中状态。</td>
+        <td>不改脚本参数和输出目录策略。</td>
+      </tr>
+      <tr>
+        <td>测试</td>
+        <td>用 Node 内置 test runner 覆盖 catalog 和 job store 的核心契约。</td>
+        <td>不往 C 盘 Python 环境安装 pytest。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>设计决策</h2>
+  <ul>
+    <li>继续使用文件存储，符合本地工具定位，避免过早引入 SQLite 或外部服务。</li>
+    <li>任务状态使用 JSON 文件，路径为 <code>data/jobs/&lt;jobId&gt;.json</code>，方便人工排查。</li>
+    <li>job id 使用 <code>&lt;videoId&gt;_&lt;workflow&gt;</code>，同一视频同一流程保持稳定，重新运行会覆盖状态。</li>
+    <li>所有写入采用临时文件 + rename，延续 catalog 现有原子写入思路。</li>
+    <li>本阶段不做 UI 新入口，只让现有状态 API 能从持久化 job 恢复失败/完成信息。</li>
+  </ul>
+
+  <h2>后续阶段</h2>
+  <ol>
+    <li>把 OCR、WhisperX、最终字幕、英文配音、最终成片逐步迁移到 job store。</li>
+    <li>增加设置页和环境检测 API。</li>
+    <li>拆分 <code>src/main.jsx</code> 的页面、组件和 API hook。</li>
+    <li>增加项目清理、空间统计、重新定位原视频。</li>
+  </ol>
+</body>
+</html>
