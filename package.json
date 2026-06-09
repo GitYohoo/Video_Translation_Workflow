@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\ensure_dev_ports_free.ps1 && concurrently \"vite\" \"node server/index.js\"",
     "build": "vite build",
+    "test:node": "node --test tests/*.test.mjs",
     "start": "node server/index.js"
   },
   "dependencies": {

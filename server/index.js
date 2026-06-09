@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { createProjectPathResolver } from "./project-paths.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(serverDirectory, "..");
@@ -88,6 +89,17 @@ const torchLibraryDirectory = path.join(
   "torch",
   "lib",
 );
+const projectPathResolver = createProjectPathResolver({ uploadDirectory });
+const {
+  sourceFilePath,
+  bsRoformerOutputPaths,
+  ocrOutputPaths,
+  whisperxOutputPaths,
+  finalSubtitlesOutputPaths,
+  englishDubbingOutputPaths,
+  finalVideoOutputPaths,
+  knownProjectPaths,
+} = projectPathResolver;
 const port = Number(process.env.PORT || 3001);
 const nonSpeechFallbackPatterns = [
   { pattern: /哈{2,}|呵{2,}|笑声|大笑|冷笑|嗤笑|偷笑|笑|laughs?|laughter|chuckles?|giggles?/i, text: "[laughs]" },
@@ -143,10 +155,6 @@ async function writeCatalog(videos) {
   await fs.rename(temporaryPath, catalogPath);
 }
 
-function sourceFilePath(record) {
-  return record.sourcePath || path.join(uploadDirectory, record.fileName);
-}
-
 function publicVideo(record) {
   return {
     id: record.id,
@@ -158,148 +166,6 @@ function publicVideo(record) {
     storageMode: record.sourcePath ? "reference" : "legacy-copy",
     contentUrl: `/api/videos/${record.id}/content`,
     thumbnailUrl: `/api/videos/${record.id}/thumbnail`,
-  };
-}
-
-function bsRoformerOutputPaths(record) {
-  if (!record.sourcePath) {
-    return null;
-  }
-  const videoStem = path.parse(record.sourcePath).name;
-  const outputDirectory = path.join(path.dirname(record.sourcePath), "BS-RoFormer_二轨分离");
-  const audioDirectory = path.join(outputDirectory, "输出音轨");
-  return {
-    outputDirectory,
-    dialoguePath: path.join(audioDirectory, `${videoStem}_DX_对白轨.wav`),
-    backgroundPath: path.join(audioDirectory, `${videoStem}_MX+FX_无对白背景底轨.wav`),
-  };
-}
-
-function ocrOutputPaths(record) {
-  if (!record.sourcePath) {
-    return null;
-  }
-  const videoStem = path.parse(record.sourcePath).name;
-  const outputDirectory = path.join(path.dirname(record.sourcePath), "OCR_字幕校准");
-  return {
-    outputDirectory,
-    dataPath: path.join(outputDirectory, `${videoStem}_OCR_字幕数据.json`),
-    srtPath: path.join(outputDirectory, `${videoStem}_OCR_标点修复.srt`),
-    reportPath: path.join(outputDirectory, `${videoStem}_OCR_质量报告.html`),
-  };
-}
-
-function whisperxOutputPaths(record) {
-  const separationPaths = bsRoformerOutputPaths(record);
-  if (!separationPaths) {
-    return null;
-  }
-  const dialogueStem = path.parse(separationPaths.dialoguePath).name;
-  const outputDirectory = path.join(separationPaths.outputDirectory, "WhisperX_说话人字幕");
-  const baseName = `${dialogueStem}_Speaker_Diarization`;
-  return {
-    inputPath: separationPaths.dialoguePath,
-    outputDirectory,
-    srtPath: path.join(outputDirectory, `${baseName}.srt`),
-    jsonPath: path.join(outputDirectory, `${baseName}.json`),
-  };
-}
-
-function finalSubtitlesOutputPaths(record) {
-  const ocrPaths = ocrOutputPaths(record);
-  const speakerPaths = whisperxOutputPaths(record);
-  if (!ocrPaths || !speakerPaths) {
-    return null;
-  }
-  const videoStem = path.parse(record.sourcePath).name;
-  const outputDirectory = path.join(path.dirname(record.sourcePath), "最终中文字幕");
-  const translationOutputDirectory = path.join(
-    path.dirname(record.sourcePath),
-    `${videoStem}_英文翻译字幕`,
-  );
-  return {
-    inputs: {
-      speakerSrt: speakerPaths.srtPath,
-      ocrSrt: ocrPaths.srtPath,
-    },
-    outputDirectory,
-    srtPath: path.join(outputDirectory, `${videoStem}_最终中文字幕.srt`),
-    translationTarget: {
-      outputDirectory: translationOutputDirectory,
-      jsonPath: path.join(translationOutputDirectory, `${videoStem}_Gemini翻译与整句分段.json`),
-      srtPath: path.join(translationOutputDirectory, `${videoStem}_最终英文字幕.srt`),
-      editorDraftPath: path.join(translationOutputDirectory, `${videoStem}_字幕编辑草稿.json`),
-    },
-    controlledTarget: {
-      srtPath: path.join(translationOutputDirectory, `${videoStem}_受控英文字幕.srt`),
-      reportPath: path.join(translationOutputDirectory, `${videoStem}_英文字幕预检报告.json`),
-    },
-    videoStem,
-  };
-}
-
-function englishDubbingOutputPaths(record) {
-  const finalPaths = finalSubtitlesOutputPaths(record);
-  const separationPaths = bsRoformerOutputPaths(record);
-  if (!finalPaths || !separationPaths) {
-    return null;
-  }
-  const videoStem = path.parse(record.sourcePath).name;
-  const workDirectory = path.join(finalPaths.translationTarget.outputDirectory, "英文配音分段");
-  const dubbingGroupsDirectory = path.join(finalPaths.translationTarget.outputDirectory, "英文配音整句分段");
-  const dubbingDirectory = path.join(workDirectory, "VoxCPM_英文配音");
-  const assemblyDirectory = path.join(dubbingDirectory, "整轨合成");
-  return {
-    inputs: {
-      chineseTimelineSrt: finalPaths.srtPath,
-      englishDraftSrt: finalPaths.translationTarget.srtPath,
-      geminiTranslationJson: finalPaths.translationTarget.jsonPath,
-      englishSrt: finalPaths.controlledTarget.srtPath,
-      dialogue: separationPaths.dialoguePath,
-      background: separationPaths.backgroundPath,
-    },
-    dubbingGroupsDirectory,
-    dubbingGroupsCsvPath: path.join(dubbingGroupsDirectory, "英文配音整句分段清单.csv"),
-    dubbingGroupsJsonPath: path.join(dubbingGroupsDirectory, "英文配音整句分段清单.json"),
-    dubbingGroupsReportPath: path.join(dubbingGroupsDirectory, "英文配音整句分段规划.html"),
-    dubbingGroupsDisplaySrtPath: path.join(dubbingGroupsDirectory, "英文显示字幕.srt"),
-    workDirectory,
-    segmentManifestPath: path.join(workDirectory, "英文配音分段清单.csv"),
-    dubbingDirectory,
-    dubbingManifestPath: path.join(dubbingDirectory, "VoxCPM_英文配音清单.csv"),
-    dubbingReportPath: path.join(dubbingDirectory, "VoxCPM_英文配音结果.html"),
-    assemblyDirectory,
-    dialogueTrackPath: path.join(assemblyDirectory, `${videoStem}_英文对白整轨.wav`),
-    mixedTrackPath: path.join(assemblyDirectory, `${videoStem}_英文成片混音_MX+FX.wav`),
-    assemblyReportPath: path.join(assemblyDirectory, "英文整轨合成结果.html"),
-    progressLogPath: path.join(dubbingDirectory, "日志", "VoxCPM_运行.log"),
-    preflightReportPath: finalPaths.controlledTarget.reportPath,
-    videoStem,
-  };
-}
-
-function finalVideoOutputPaths(record) {
-  const dubbingPaths = englishDubbingOutputPaths(record);
-  if (!dubbingPaths) {
-    return null;
-  }
-  const videoStem = path.parse(record.sourcePath).name;
-  const outputDirectory = path.dirname(record.sourcePath);
-  const prefix = `${videoStem}_英文配音`;
-  return {
-    inputs: {
-      video: record.sourcePath,
-      audio: dubbingPaths.mixedTrackPath,
-      subtitle: dubbingPaths.inputs.englishSrt,
-    },
-    outputDirectory,
-    styledAssPath: path.join(outputDirectory, `${prefix}_英文上方字幕.ass`),
-    videoPath: path.join(outputDirectory, `${prefix}_内嵌英文字幕.mp4`),
-    reportPath: path.join(outputDirectory, "英文配音视频成片结果.html"),
-    previewPaths: [1, 2, 3].map((number) =>
-      path.join(outputDirectory, "字幕样式参考帧", `参考帧_${String(number).padStart(2, "0")}.jpg`),
-    ),
-    prefix,
   };
 }
 
@@ -830,58 +696,6 @@ async function saveSubtitleEditor(record, requestedCues) {
     chineseChanged,
     englishChanged,
   };
-}
-
-function knownProjectPaths(record) {
-  const separation = bsRoformerOutputPaths(record);
-  const ocr = ocrOutputPaths(record);
-  const speakers = whisperxOutputPaths(record);
-  const finalSubtitles = finalSubtitlesOutputPaths(record);
-  const dubbing = englishDubbingOutputPaths(record);
-  const finalVideo = finalVideoOutputPaths(record);
-  const paths = [
-    record.sourcePath,
-    separation?.outputDirectory,
-    separation?.dialoguePath,
-    separation?.backgroundPath,
-    ocr?.outputDirectory,
-    ocr?.dataPath,
-    ocr?.srtPath,
-    ocr?.reportPath,
-    speakers?.inputPath,
-    speakers?.outputDirectory,
-    speakers?.srtPath,
-    speakers?.jsonPath,
-    finalSubtitles?.outputDirectory,
-    finalSubtitles?.srtPath,
-    finalSubtitles?.translationTarget?.outputDirectory,
-    finalSubtitles?.translationTarget?.jsonPath,
-    finalSubtitles?.translationTarget?.srtPath,
-    finalSubtitles?.translationTarget?.editorDraftPath,
-    finalSubtitles?.controlledTarget?.srtPath,
-    finalSubtitles?.controlledTarget?.reportPath,
-    dubbing?.dubbingGroupsDirectory,
-    dubbing?.dubbingGroupsCsvPath,
-    dubbing?.dubbingGroupsJsonPath,
-    dubbing?.dubbingGroupsReportPath,
-    dubbing?.dubbingGroupsDisplaySrtPath,
-    dubbing?.workDirectory,
-    dubbing?.segmentManifestPath,
-    dubbing?.dubbingManifestPath,
-    dubbing?.dubbingReportPath,
-    dubbing?.assemblyDirectory,
-    dubbing?.dialogueTrackPath,
-    dubbing?.mixedTrackPath,
-    dubbing?.assemblyReportPath,
-    finalVideo?.outputDirectory,
-    finalVideo?.styledAssPath,
-    finalVideo?.videoPath,
-    finalVideo?.reportPath,
-    ...(finalVideo?.previewPaths || []),
-  ];
-  return new Set(
-    paths.filter(Boolean).map((entry) => path.resolve(entry).toLocaleLowerCase()),
-  );
 }
 
 async function openProjectPath(record, requestedPath) {
