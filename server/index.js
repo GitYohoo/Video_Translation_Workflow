@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { createCatalogStore } from "./catalog-store.js";
 import {
   createProjectPathResolver,
   projectWorkspaceDirectory,
@@ -144,23 +145,8 @@ const activeFinalSubtitlesTasks = new Map();
 const activeEnglishDubbingTasks = new Map();
 const activeFinalVideoTasks = new Map();
 const finalVideoStyles = new Map();
-
-async function loadCatalog() {
-  try {
-    return JSON.parse(await fs.readFile(catalogPath, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return [];
-    }
-    throw error;
-  }
-}
-
-async function writeCatalog(videos) {
-  const temporaryPath = `${catalogPath}.tmp`;
-  await fs.writeFile(temporaryPath, JSON.stringify(videos, null, 2), "utf8");
-  await fs.rename(temporaryPath, catalogPath);
-}
+const catalogStore = createCatalogStore(catalogPath);
+const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
 
 function publicVideo(record) {
   return {
@@ -2141,10 +2127,19 @@ async function addReferencePaths(paths) {
 const app = express();
 app.use(express.json({ limit: "2mb" }));
 
+async function requestVideo(request, response) {
+  const video = await findVideoById(request.params.id);
+  if (!video) {
+    response.sendStatus(404);
+    return null;
+  }
+  return video;
+}
+
 app.get("/api/videos", async (_request, response, next) => {
   try {
     const videos = await loadCatalog();
-    response.json(videos.sort((left, right) => right.createdAt - left.createdAt).map(publicVideo));
+    response.json(sortedVideos(videos).map(publicVideo));
   } catch (error) {
     next(error);
   }
@@ -2152,10 +2147,8 @@ app.get("/api/videos", async (_request, response, next) => {
 
 app.get("/api/videos/:id", async (request, response, next) => {
   try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
+    const video = await requestVideo(request, response);
     if (!video) {
-      response.sendStatus(404);
       return;
     }
     response.json(publicVideo(video));
@@ -2166,10 +2159,8 @@ app.get("/api/videos/:id", async (request, response, next) => {
 
 app.post("/api/videos/:id/open-path", async (request, response, next) => {
   try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
+    const video = await requestVideo(request, response);
     if (!video) {
-      response.sendStatus(404);
       return;
     }
     await openProjectPath(video, request.body?.path);
@@ -2181,10 +2172,8 @@ app.post("/api/videos/:id/open-path", async (request, response, next) => {
 
 app.post("/api/videos/:id/open-artifact", async (request, response, next) => {
   try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
+    const video = await requestVideo(request, response);
     if (!video) {
-      response.sendStatus(404);
       return;
     }
     await openProjectArtifact(video, request.body?.artifactKey);
