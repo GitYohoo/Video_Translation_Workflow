@@ -21,6 +21,7 @@ import { createTaskRegistry } from "./task-registry.js";
 import { createTaskRunner } from "./task-runner.js";
 import { activeTaskFromJob, recoverWorkflowTask } from "./workflow-job-state.js";
 import { createBsRoformerWorkflow } from "./workflows/bs-roformer.js";
+import { createFinalSubtitlesWorkflow } from "./workflows/final-subtitles.js";
 import { createWhisperxWorkflow } from "./workflows/whisperx.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -230,6 +231,24 @@ const whisperxWorkflow = createWhisperxWorkflow({
       PYTHONUTF8: "1",
       PYTHONIOENCODING: "utf-8",
       PATH: `${torchLibraryDirectory};${ffmpegDirectory};${process.env.PATH || ""}`,
+    },
+  },
+});
+const finalSubtitlesWorkflow = createFinalSubtitlesWorkflow({
+  activeTasks: activeFinalSubtitlesTasks,
+  outputPaths: finalSubtitlesOutputPaths,
+  getStatus: finalSubtitlesStatus,
+  isFile,
+  taskRunner,
+  configuration: {
+    pythonPath: finalSubtitlesPython,
+    coreScript: finalSubtitlesCoreScript,
+    logDirectory,
+    workingDirectory: workflowRootDirectory,
+    environment: {
+      ...process.env,
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8",
     },
   },
 });
@@ -1281,102 +1300,7 @@ async function finalSubtitlesStatus(record) {
 }
 
 async function startFinalSubtitles(record) {
-  const paths = finalSubtitlesOutputPaths(record);
-  if (!paths) {
-    throw new Error("该项目没有原视频路径，无法合并最终中文字幕。");
-  }
-  const missingInputs = [];
-  for (const inputPath of Object.values(paths.inputs)) {
-    if (!(await isFile(inputPath))) {
-      missingInputs.push(inputPath);
-    }
-  }
-  if (missingInputs.length > 0) {
-    throw new Error(`合并所需字幕尚未齐全：${missingInputs.join("；")}`);
-  }
-  if (activeFinalSubtitlesTasks.get(record.id)?.status === "running") {
-    return finalSubtitlesStatus(record);
-  }
-  for (const [label, filePath] of [
-    ["最终中文字幕合并脚本", finalSubtitlesCoreScript],
-    ["Python 环境", finalSubtitlesPython],
-  ]) {
-    if (!(await isFile(filePath))) {
-      throw new Error(`找不到${label}：${filePath}`);
-    }
-  }
-
-  const logPath = path.join(logDirectory, `${record.id}_最终中文字幕.log`);
-  const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
-  const job = await jobStore.startJob({
-    videoId: record.id,
-    workflow: FINAL_SUBTITLES_WORKFLOW,
-    logPath,
-  });
-  const child = spawn(
-    finalSubtitlesPython,
-    [
-      finalSubtitlesCoreScript,
-      "--speaker-srt",
-      paths.inputs.speakerSrt,
-      "--ocr-srt",
-      paths.inputs.ocrSrt,
-      "--output-dir",
-      paths.outputDirectory,
-      "--video-stem",
-      paths.videoStem,
-    ],
-    {
-      cwd: workflowRootDirectory,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-      },
-    },
-  );
-  const task = activeTaskFromJob(job);
-  activeFinalSubtitlesTasks.set(record.id, task);
-  registerCancelableTask({ task, childProcess: () => child, output });
-  child.stdout.pipe(output, { end: false });
-  child.stderr.pipe(output, { end: false });
-  child.on("error", async (error) => {
-    if (task.status === "cancelled") {
-      return;
-    }
-    task.status = "failed";
-    task.error = `中文字幕合并启动失败：${error.message}`;
-    task.finishedAt = new Date().toISOString();
-    try {
-      await jobStore.failJob(task.id, task.error);
-    } catch (jobError) {
-      output.write(`\n写入任务状态失败：${jobError.message}\n`);
-    } finally {
-      finishRegisteredTask(task);
-      output.end(`\n任务状态：failed\n${task.error}\n`);
-    }
-  });
-  child.on("close", async (code) => {
-    if (["cancelled", "failed"].includes(task.status)) {
-      return;
-    }
-    task.status = code === 0 ? "completed" : "failed";
-    task.error = code === 0 ? null : `中文字幕合并退出码：${code}`;
-    task.finishedAt = new Date().toISOString();
-    try {
-      if (code === 0) {
-        await jobStore.finishJob(task.id, "completed");
-      } else {
-        await jobStore.failJob(task.id, task.error);
-      }
-    } catch (jobError) {
-      output.write(`\n写入任务状态失败：${jobError.message}\n`);
-    }
-    finishRegisteredTask(task);
-    output.end(`\n任务状态：${task.status}\n`);
-  });
-  return finalSubtitlesStatus(record);
+  return finalSubtitlesWorkflow.start(record);
 }
 
 async function englishDubbingStatus(record) {
