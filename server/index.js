@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { resolveApplicationPaths } from "./application-paths.js";
 import { createCatalogStore } from "./catalog-store.js";
 import { selectVideoPath } from "./file-dialog.js";
 import { createJobController } from "./job-controller.js";
@@ -26,19 +27,23 @@ import { createFinalVideoWorkflow } from "./workflows/final-video.js";
 import { createWhisperxWorkflow } from "./workflows/whisperx.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
-const projectDirectory = path.resolve(serverDirectory, "..");
-const dataDirectory = path.join(projectDirectory, "data");
+const {
+  applicationRoot,
+  dataDirectory,
+  runtimeDirectory,
+  distDirectory,
+  scriptsDirectory,
+} = resolveApplicationPaths({ serverDirectory });
 const uploadDirectory = path.join(dataDirectory, "uploads");
 const thumbnailDirectory = path.join(dataDirectory, "thumbnails");
 const logDirectory = path.join(dataDirectory, "logs");
 const jobDirectory = path.join(dataDirectory, "jobs");
 const catalogPath = path.join(dataDirectory, "videos.json");
 const settingsPath = path.join(dataDirectory, "settings.json");
-const distDirectory = path.join(projectDirectory, "dist");
-const workflowRootDirectory = projectDirectory;
+const workflowRootDirectory = applicationRoot;
 const runtimeSettings = await loadRuntimeSettings(settingsPath);
-const bsRoformerRuntimeDirectory = path.join(workflowRootDirectory, ".runtime");
-const bsRoformerCoreScript = path.join(workflowRootDirectory, "scripts", "bs_roformer_refinement.py");
+const bsRoformerRuntimeDirectory = runtimeDirectory;
+const bsRoformerCoreScript = path.join(scriptsDirectory, "bs_roformer_refinement.py");
 const bsRoformerPython = path.join(
   bsRoformerRuntimeDirectory,
   "bs-roformer-venv",
@@ -47,8 +52,8 @@ const bsRoformerPython = path.join(
 );
 const bsRoformerTempDirectory = path.join(bsRoformerRuntimeDirectory, "tmp");
 const bsRoformerModelDirectory = path.join(bsRoformerRuntimeDirectory, "bs-roformer-models");
-const subtitleOcrCoreScript = path.join(workflowRootDirectory, "scripts", "burned_subtitle_ocr.py");
-const punctuationCoreScript = path.join(workflowRootDirectory, "scripts", "restore_ocr_punctuation.py");
+const subtitleOcrCoreScript = path.join(scriptsDirectory, "burned_subtitle_ocr.py");
+const punctuationCoreScript = path.join(scriptsDirectory, "restore_ocr_punctuation.py");
 const subtitleOcrPython = path.join(
   bsRoformerRuntimeDirectory,
   "subtitle-ocr-venv",
@@ -61,34 +66,29 @@ const punctuationPython = path.join(
   "Scripts",
   "python.exe",
 );
-const whisperxCoreScript = path.join(workflowRootDirectory, "scripts", "whisperx_speaker_subtitles.py");
+const whisperxCoreScript = path.join(scriptsDirectory, "whisperx_speaker_subtitles.py");
 const whisperxPython = punctuationPython;
 const finalSubtitlesCoreScript = path.join(
-  workflowRootDirectory,
-  "scripts",
+  scriptsDirectory,
   "merge_final_chinese_subtitles.py",
 );
 const finalSubtitlesPython = punctuationPython;
 const controlledEnglishSubtitlesCoreScript = path.join(
-  workflowRootDirectory,
-  "scripts",
+  scriptsDirectory,
   "prepare_controlled_english_subtitles.py",
 );
 const planEnglishDubbingGroupsScript = path.join(
-  workflowRootDirectory,
-  "scripts",
+  scriptsDirectory,
   "plan_english_dubbing_groups.py",
 );
-const splitDubbingCoreScript = path.join(workflowRootDirectory, "scripts", "split_dubbing_segments.py");
-const voxCpmCoreScript = path.join(workflowRootDirectory, "scripts", "voxcpm_dubbing_workflow.py");
+const splitDubbingCoreScript = path.join(scriptsDirectory, "split_dubbing_segments.py");
+const voxCpmCoreScript = path.join(scriptsDirectory, "voxcpm_dubbing_workflow.py");
 const assembleEnglishTrackScript = path.join(
-  workflowRootDirectory,
-  "scripts",
+  scriptsDirectory,
   "assemble_english_dub_track.py",
 );
 const renderEnglishVideoScript = path.join(
-  workflowRootDirectory,
-  "scripts",
+  scriptsDirectory,
   "render_english_dub_video.py",
 );
 const voxCpmPython = runtimeSettings.voxCpmPython;
