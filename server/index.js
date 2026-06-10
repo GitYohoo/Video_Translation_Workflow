@@ -7,13 +7,16 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { createCatalogStore } from "./catalog-store.js";
 import { selectVideoPath } from "./file-dialog.js";
+import { createJobController } from "./job-controller.js";
 import { createJobStore, jobIdFor } from "./job-store.js";
+import { terminateChildProcess } from "./process-control.js";
 import {
   createProjectPathResolver,
   projectWorkspaceDirectory,
 } from "./project-paths.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
 import { applySelectedSourceToRecord } from "./source-record.js";
+import { createTaskRegistry } from "./task-registry.js";
 import { activeTaskFromJob, recoverWorkflowTask } from "./workflow-job-state.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -159,6 +162,24 @@ const finalVideoStyles = new Map();
 const catalogStore = createCatalogStore(catalogPath);
 const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
 const jobStore = createJobStore(jobDirectory);
+const taskRegistry = createTaskRegistry();
+const jobController = createJobController({ jobStore, taskRegistry });
+
+function registerCancelableTask({ task, childProcess, output }) {
+  task.cancel = async () => {
+    task.status = "cancelled";
+    task.error = null;
+    task.cancellationReason = "用户取消";
+    task.finishedAt = new Date().toISOString();
+    await terminateChildProcess(childProcess());
+    output.end("\n任务状态：cancelled\n用户已取消任务。\n");
+  };
+  taskRegistry.register(task);
+}
+
+function finishRegisteredTask(task) {
+  taskRegistry.finish(task.id);
+}
 
 function publicVideo(record) {
   return {
@@ -849,6 +870,8 @@ async function bsRoformerStatus(record) {
     status = "running";
   } else if (task?.status === "failed") {
     status = "failed";
+  } else if (task?.status === "cancelled") {
+    status = "cancelled";
   } else if (dialogueReady && backgroundReady) {
     status = "completed";
   }
@@ -921,35 +944,35 @@ async function startBsRoformer(record) {
       },
     },
   );
-  const task = {
-    id: job.id,
-    status: "running",
-    startedAt: job.startedAt,
-    finishedAt: null,
-    logPath,
-    error: null,
-  };
+  const task = activeTaskFromJob(job);
   activeBsRoformerTasks.set(record.id, task);
+  registerCancelableTask({ task, childProcess: () => child, output });
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
   child.on("error", async (error) => {
+    if (task.status === "cancelled") {
+      return;
+    }
     task.status = "failed";
     task.error = error.message;
     task.finishedAt = new Date().toISOString();
     await jobStore.failJob(task.id, error.message);
+    finishRegisteredTask(task);
     output.end(`\n任务启动失败：${error.message}\n`);
   });
   child.on("close", async (code) => {
-    if (task.status !== "failed") {
-      task.status = code === 0 ? "completed" : "failed";
-      task.error = code === 0 ? null : `处理进程退出码：${code}`;
-      task.finishedAt = new Date().toISOString();
-      if (code === 0) {
-        await jobStore.finishJob(task.id, "completed");
-      } else {
-        await jobStore.failJob(task.id, task.error);
-      }
+    if (["cancelled", "failed"].includes(task.status)) {
+      return;
     }
+    task.status = code === 0 ? "completed" : "failed";
+    task.error = code === 0 ? null : `处理进程退出码：${code}`;
+    task.finishedAt = new Date().toISOString();
+    if (code === 0) {
+      await jobStore.finishJob(task.id, "completed");
+    } else {
+      await jobStore.failJob(task.id, task.error);
+    }
+    finishRegisteredTask(task);
     output.end(`\n任务状态：${task.status}\n`);
   });
   return bsRoformerStatus(record);
@@ -993,6 +1016,8 @@ async function ocrStatus(record) {
     status = "running";
   } else if (task?.status === "failed") {
     status = "failed";
+  } else if (task?.status === "cancelled") {
+    status = "cancelled";
   } else if (srtReady) {
     status = "completed";
   }
@@ -1043,16 +1068,10 @@ async function startOcr(record) {
     logPath,
     stage: "ocr",
   });
-  const task = {
-    id: job.id,
-    status: "running",
-    stage: job.stage,
-    startedAt: job.startedAt,
-    finishedAt: null,
-    logPath,
-    error: null,
-  };
+  const task = activeTaskFromJob(job);
   activeOcrTasks.set(record.id, task);
+  let currentChild = null;
+  registerCancelableTask({ task, childProcess: () => currentChild, output });
   const ocrEnvironment = {
     ...process.env,
     PADDLE_PDX_CACHE_HOME: "D:\\models\\paddle",
@@ -1079,7 +1098,7 @@ async function startOcr(record) {
   };
 
   async function fail(message) {
-    if (task.status === "failed") {
+    if (["failed", "cancelled"].includes(task.status)) {
       return;
     }
     task.status = "failed";
@@ -1090,6 +1109,7 @@ async function startOcr(record) {
     } catch (error) {
       output.write(`\n写入任务状态失败：${error.message}\n`);
     } finally {
+      finishRegisteredTask(task);
       output.end(`\n任务状态：failed\n${message}\n`);
     }
   }
@@ -1103,13 +1123,14 @@ async function startOcr(record) {
       [punctuationCoreScript, "--ocr-json", paths.dataPath],
       { cwd: workflowRootDirectory, windowsHide: true, env: punctuationEnvironment },
     );
+    currentChild = punctuationProcess;
     punctuationProcess.stdout.pipe(output, { end: false });
     punctuationProcess.stderr.pipe(output, { end: false });
     punctuationProcess.on("error", (error) => {
       void fail(`FunASR 启动失败：${error.message}`);
     });
     punctuationProcess.on("close", async (code) => {
-      if (task.status === "failed") {
+      if (["failed", "cancelled"].includes(task.status)) {
         return;
       }
       if (code !== 0) {
@@ -1124,6 +1145,7 @@ async function startOcr(record) {
       } catch (error) {
         output.write(`\n写入任务状态失败：${error.message}\n`);
       } finally {
+        finishRegisteredTask(task);
         output.end("\n任务状态：completed\n");
       }
     });
@@ -1148,13 +1170,14 @@ async function startOcr(record) {
     ],
     { cwd: workflowRootDirectory, windowsHide: true, env: ocrEnvironment },
   );
+  currentChild = ocrProcess;
   ocrProcess.stdout.pipe(output, { end: false });
   ocrProcess.stderr.pipe(output, { end: false });
   ocrProcess.on("error", (error) => {
     void fail(`GPU OCR 启动失败：${error.message}`);
   });
   ocrProcess.on("close", (code) => {
-    if (task.status === "failed") {
+    if (["failed", "cancelled"].includes(task.status)) {
       return;
     }
     if (code !== 0) {
@@ -1188,6 +1211,8 @@ async function whisperxStatus(record) {
     status = "running";
   } else if (task?.status === "failed") {
     status = "failed";
+  } else if (task?.status === "cancelled") {
+    status = "cancelled";
   } else if (srtReady && jsonReady) {
     status = "completed";
   }
@@ -1243,7 +1268,7 @@ async function startWhisperx(record) {
   activeWhisperxTasks.set(record.id, task);
 
   async function fail(message) {
-    if (task.status === "failed") {
+    if (["failed", "cancelled"].includes(task.status)) {
       return;
     }
     task.status = "failed";
@@ -1254,6 +1279,7 @@ async function startWhisperx(record) {
     } catch (error) {
       output.write(`\n写入任务状态失败：${error.message}\n`);
     } finally {
+      finishRegisteredTask(task);
       output.end(`\n任务状态：failed\n${message}\n`);
     }
   }
@@ -1290,13 +1316,14 @@ async function startWhisperx(record) {
       },
     },
   );
+  registerCancelableTask({ task, childProcess: () => child, output });
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
   child.on("error", (error) => {
     void fail(`WhisperX 启动失败：${error.message}`);
   });
   child.on("close", async (code) => {
-    if (task.status === "failed") {
+    if (["failed", "cancelled"].includes(task.status)) {
       return;
     }
     if (code !== 0) {
@@ -1311,6 +1338,7 @@ async function startWhisperx(record) {
     } catch (error) {
       output.write(`\n写入任务状态失败：${error.message}\n`);
     } finally {
+      finishRegisteredTask(task);
       output.end(`\n任务状态：${task.status}\n`);
     }
   });
@@ -1433,9 +1461,13 @@ async function startFinalSubtitles(record) {
   );
   const task = activeTaskFromJob(job);
   activeFinalSubtitlesTasks.set(record.id, task);
+  registerCancelableTask({ task, childProcess: () => child, output });
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
   child.on("error", async (error) => {
+    if (task.status === "cancelled") {
+      return;
+    }
     task.status = "failed";
     task.error = `中文字幕合并启动失败：${error.message}`;
     task.finishedAt = new Date().toISOString();
@@ -1444,24 +1476,27 @@ async function startFinalSubtitles(record) {
     } catch (jobError) {
       output.write(`\n写入任务状态失败：${jobError.message}\n`);
     } finally {
+      finishRegisteredTask(task);
       output.end(`\n任务状态：failed\n${task.error}\n`);
     }
   });
   child.on("close", async (code) => {
-    if (task.status !== "failed") {
-      task.status = code === 0 ? "completed" : "failed";
-      task.error = code === 0 ? null : `中文字幕合并退出码：${code}`;
-      task.finishedAt = new Date().toISOString();
-      try {
-        if (code === 0) {
-          await jobStore.finishJob(task.id, "completed");
-        } else {
-          await jobStore.failJob(task.id, task.error);
-        }
-      } catch (jobError) {
-        output.write(`\n写入任务状态失败：${jobError.message}\n`);
-      }
+    if (["cancelled", "failed"].includes(task.status)) {
+      return;
     }
+    task.status = code === 0 ? "completed" : "failed";
+    task.error = code === 0 ? null : `中文字幕合并退出码：${code}`;
+    task.finishedAt = new Date().toISOString();
+    try {
+      if (code === 0) {
+        await jobStore.finishJob(task.id, "completed");
+      } else {
+        await jobStore.failJob(task.id, task.error);
+      }
+    } catch (jobError) {
+      output.write(`\n写入任务状态失败：${jobError.message}\n`);
+    }
+    finishRegisteredTask(task);
     output.end(`\n任务状态：${task.status}\n`);
   });
   return finalSubtitlesStatus(record);
@@ -1632,6 +1667,8 @@ async function startEnglishDubbing(record) {
   });
   const task = activeTaskFromJob(job);
   activeEnglishDubbingTasks.set(record.id, task);
+  let currentChild = null;
+  registerCancelableTask({ task, childProcess: () => currentChild, output });
 
   async function updateStage(stage) {
     task.stage = stage;
@@ -1662,19 +1699,26 @@ async function startEnglishDubbing(record) {
 
   function runProcess(filePath, arguments_, environment) {
     return new Promise((resolve, reject) => {
+      if (task.status === "cancelled") {
+        reject(new Error("任务已取消。"));
+        return;
+      }
       const child = spawn(filePath, arguments_, {
         cwd: workflowRootDirectory,
         windowsHide: true,
         env: environment,
       });
+      currentChild = child;
       let started = true;
       child.stdout.pipe(output, { end: false });
       child.stderr.pipe(output, { end: false });
       child.on("error", (error) => {
         started = false;
+        currentChild = null;
         reject(error);
       });
       child.on("close", (code) => {
+        currentChild = null;
         if (!started) {
           return;
         }
@@ -1819,9 +1863,13 @@ async function startEnglishDubbing(record) {
       } catch (error) {
         output.write(`\n写入任务状态失败：${error.message}\n`);
       } finally {
+        finishRegisteredTask(task);
         output.end("\n任务状态：completed\n");
       }
     } catch (error) {
+      if (task.status === "cancelled") {
+        return;
+      }
       task.status = "failed";
       task.error = `英文配音混音失败：${error.message}`;
       task.finishedAt = new Date().toISOString();
@@ -1830,6 +1878,7 @@ async function startEnglishDubbing(record) {
       } catch (jobError) {
         output.write(`\n写入任务状态失败：${jobError.message}\n`);
       } finally {
+        finishRegisteredTask(task);
         output.end(`\n任务状态：failed\n${task.error}\n`);
       }
     }
@@ -1888,6 +1937,8 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
     redubSegmentNumber: segmentNumber,
   };
   activeEnglishDubbingTasks.set(record.id, task);
+  let currentChild = null;
+  registerCancelableTask({ task, childProcess: () => currentChild, output });
 
   const commonEnvironment = {
     ...process.env,
@@ -1909,19 +1960,26 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
 
   function runProcess(filePath, arguments_, environment) {
     return new Promise((resolve, reject) => {
+      if (task.status === "cancelled") {
+        reject(new Error("任务已取消。"));
+        return;
+      }
       const child = spawn(filePath, arguments_, {
         cwd: workflowRootDirectory,
         windowsHide: true,
         env: environment,
       });
+      currentChild = child;
       let started = true;
       child.stdout.pipe(output, { end: false });
       child.stderr.pipe(output, { end: false });
       child.on("error", (error) => {
         started = false;
+        currentChild = null;
         reject(error);
       });
       child.on("close", (code) => {
+        currentChild = null;
         if (!started) {
           return;
         }
@@ -1997,9 +2055,13 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
       } catch (error) {
         output.write(`\n写入任务状态失败：${error.message}\n`);
       } finally {
+        finishRegisteredTask(task);
         output.end("\n任务状态：completed\n");
       }
     } catch (error) {
+      if (task.status === "cancelled") {
+        return;
+      }
       task.status = "failed";
       task.error = `第 ${paddedSegmentNumber} 段重新配音失败：${error.message}`;
       task.finishedAt = new Date().toISOString();
@@ -2008,6 +2070,7 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
       } catch (jobError) {
         output.write(`\n写入任务状态失败：${jobError.message}\n`);
       } finally {
+        finishRegisteredTask(task);
         output.end(`\n任务状态：failed\n${task.error}\n`);
       }
     }
@@ -2236,9 +2299,13 @@ async function startFinalVideo(record, requestedStyle) {
   );
   const task = activeTaskFromJob(job);
   activeFinalVideoTasks.set(record.id, task);
+  registerCancelableTask({ task, childProcess: () => child, output });
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
   child.on("error", async (error) => {
+    if (task.status === "cancelled") {
+      return;
+    }
     task.status = "failed";
     task.error = `最终成片启动失败：${error.message}`;
     task.finishedAt = new Date().toISOString();
@@ -2247,24 +2314,27 @@ async function startFinalVideo(record, requestedStyle) {
     } catch (jobError) {
       output.write(`\n写入任务状态失败：${jobError.message}\n`);
     } finally {
+      finishRegisteredTask(task);
       output.end(`\n任务状态：failed\n${task.error}\n`);
     }
   });
   child.on("close", async (code) => {
-    if (task.status !== "failed") {
-      task.status = code === 0 ? "completed" : "failed";
-      task.error = code === 0 ? null : `最终成片退出码：${code}`;
-      task.finishedAt = new Date().toISOString();
-      try {
-        if (code === 0) {
-          await jobStore.finishJob(task.id, "completed");
-        } else {
-          await jobStore.failJob(task.id, task.error);
-        }
-      } catch (jobError) {
-        output.write(`\n写入任务状态失败：${jobError.message}\n`);
-      }
+    if (["cancelled", "failed"].includes(task.status)) {
+      return;
     }
+    task.status = code === 0 ? "completed" : "failed";
+    task.error = code === 0 ? null : `最终成片退出码：${code}`;
+    task.finishedAt = new Date().toISOString();
+    try {
+      if (code === 0) {
+        await jobStore.finishJob(task.id, "completed");
+      } else {
+        await jobStore.failJob(task.id, task.error);
+      }
+    } catch (jobError) {
+      output.write(`\n写入任务状态失败：${jobError.message}\n`);
+    }
+    finishRegisteredTask(task);
     output.end(`\n任务状态：${task.status}\n`);
   });
   return finalVideoStatus(record);
@@ -2374,6 +2444,47 @@ app.get("/api/videos/:id", async (request, response, next) => {
       return;
     }
     response.json(publicVideo(video));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/jobs", async (request, response, next) => {
+  try {
+    const video = await requestVideo(request, response);
+    if (!video) {
+      return;
+    }
+    response.json(await jobController.list(video.id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/jobs/:workflow", async (request, response, next) => {
+  try {
+    const video = await requestVideo(request, response);
+    if (!video) {
+      return;
+    }
+    const job = await jobController.get(video.id, request.params.workflow);
+    if (!job) {
+      response.sendStatus(404);
+      return;
+    }
+    response.json(job);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/jobs/:workflow/cancel", async (request, response, next) => {
+  try {
+    const video = await requestVideo(request, response);
+    if (!video) {
+      return;
+    }
+    response.json(await jobController.cancel(video.id, request.params.workflow));
   } catch (error) {
     next(error);
   }

@@ -66,3 +66,13 @@ test("rejects cancellation for missing or finished jobs", async () => {
   await assert.rejects(() => controller.cancel("video-4", "ocr"), /不能取消/);
   await assert.rejects(() => controller.cancel("missing", "ocr"), /找不到任务/);
 });
+
+test("reports persisted running jobs as interrupted when no process is registered", async () => {
+  const { jobStore, controller } = await temporaryController();
+  await jobStore.startJob({ videoId: "video-5", workflow: "ocr" });
+
+  const job = await controller.get("video-5", "ocr");
+
+  assert.equal(job.status, "failed");
+  assert.match(job.error, /上次运行中断/);
+});

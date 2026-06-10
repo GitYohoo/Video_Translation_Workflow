@@ -309,6 +309,22 @@ function WorkflowStageSection({ group, children }) {
   );
 }
 
+function CancelTaskButton({ visible, busy, onClick }) {
+  if (!visible) {
+    return null;
+  }
+  return (
+    <button
+      className="secondary-button workflow-cancel-action"
+      disabled={busy}
+      type="button"
+      onClick={onClick}
+    >
+      {busy ? "正在取消..." : "取消任务"}
+    </button>
+  );
+}
+
 function Sidebar({ videos, isLoading, isAddingVideo, onAddPath, onDelete }) {
   return (
     <aside className="sidebar">
@@ -450,6 +466,7 @@ function VideoPage({ videos, isLoading }) {
   const [notFound, setNotFound] = useState(false);
   const [isReplacingSource, setIsReplacingSource] = useState(false);
   const [sourceReplaceMessage, setSourceReplaceMessage] = useState("");
+  const [cancellingWorkflow, setCancellingWorkflow] = useState("");
   const [separation, setSeparation] = useState(null);
   const [separationError, setSeparationError] = useState("");
   const [isStartingSeparation, setIsStartingSeparation] = useState(false);
@@ -523,6 +540,7 @@ function VideoPage({ videos, isLoading }) {
     setFinalVideoStyle(defaultFinalVideoStyle);
     setSeparationError("");
     setSourceReplaceMessage("");
+    setCancellingWorkflow("");
     setOcrError("");
     setSpeakersError("");
     setFinalSubtitlesError("");
@@ -980,6 +998,21 @@ function VideoPage({ videos, isLoading }) {
     }
   };
 
+  const cancelWorkflow = async (workflow, statusPath, setStatus, setError) => {
+    setCancellingWorkflow(workflow);
+    setError("");
+    try {
+      await requestJson(`/api/videos/${record.id}/jobs/${workflow}/cancel`, {
+        method: "POST",
+      });
+      setStatus(await requestJson(`/api/videos/${record.id}/workflow/${statusPath}`));
+    } catch (error) {
+      setError(`取消任务失败：${error.message}`);
+    } finally {
+      setCancellingWorkflow("");
+    }
+  };
+
   const runSingleEnglishDubbingRedub = async () => {
     setIsStartingSingleRedub(true);
     setEnglishDubbingError("");
@@ -1198,6 +1231,7 @@ function VideoPage({ videos, isLoading }) {
               {separation?.status === "running" && "正在处理"}
               {separation?.status === "completed" && "已生成二轨"}
               {separation?.status === "failed" && "处理失败"}
+              {separation?.status === "cancelled" && "已取消"}
               {separation?.status === "unavailable" && "不可执行"}
               {(!separation || separation.status === "ready") && "等待开始"}
             </strong>
@@ -1206,9 +1240,11 @@ function VideoPage({ videos, isLoading }) {
                 "音轨分离正在后台执行，页面会自动刷新状态。"}
               {separation?.status === "failed" &&
                 "上次处理失败，请查看下方错误信息后重新执行。"}
+              {separation?.status === "cancelled" && "任务已取消，可以重新执行。"}
               {separation?.status === "unavailable" && "请先在页面顶部重新选择原视频。"}
               {separation?.status !== "running" &&
                 separation?.status !== "failed" &&
+                separation?.status !== "cancelled" &&
                 separation?.status !== "unavailable" &&
                 "输出将写入原视频同级目录。"}
             </small>
@@ -1244,6 +1280,18 @@ function VideoPage({ videos, isLoading }) {
                 ? "重新生成二轨"
                 : "开始二轨分离"}
           </button>
+          <CancelTaskButton
+            busy={cancellingWorkflow === "bs-roformer"}
+            visible={separation?.status === "running"}
+            onClick={() =>
+              cancelWorkflow(
+                "bs-roformer",
+                "bs-roformer",
+                setSeparation,
+                setSeparationError,
+              )
+            }
+          />
         </div>
         <div className="workflow-card" id="workflow-step-ocr">
           <p className="eyebrow">步骤 02</p>
@@ -1255,6 +1303,7 @@ function VideoPage({ videos, isLoading }) {
                 (ocr.stage === "punctuation" ? "正在恢复标点" : "正在提取字幕")}
               {ocr?.status === "completed" && "OCR 字幕已生成"}
               {ocr?.status === "failed" && "处理失败"}
+              {ocr?.status === "cancelled" && "已取消"}
               {ocr?.status === "unavailable" && "不可执行"}
               {(!ocr || ocr.status === "ready") && "等待开始"}
             </strong>
@@ -1265,9 +1314,11 @@ function VideoPage({ videos, isLoading }) {
                   : "GPU OCR 正在读取画面字幕，页面会自动刷新状态。")}
               {ocr?.status === "failed" &&
                 "上次处理失败，请查看下方错误信息后重新执行。"}
+              {ocr?.status === "cancelled" && "任务已取消，可以重新执行。"}
               {ocr?.status === "unavailable" && "请先在页面顶部重新选择原视频。"}
               {ocr?.status !== "running" &&
                 ocr?.status !== "failed" &&
+                ocr?.status !== "cancelled" &&
                 ocr?.status !== "unavailable" &&
                 "字幕结果将写入原视频同级目录。"}
             </small>
@@ -1303,6 +1354,18 @@ function VideoPage({ videos, isLoading }) {
                 ? "重新生成 OCR 字幕"
                 : "开始提取 OCR 字幕"}
           </button>
+          <CancelTaskButton
+            busy={cancellingWorkflow === "ocr-subtitles"}
+            visible={ocr?.status === "running"}
+            onClick={() =>
+              cancelWorkflow(
+                "ocr-subtitles",
+                "ocr-subtitles",
+                setOcr,
+                setOcrError,
+              )
+            }
+          />
         </div>
         <div className="workflow-card" id="workflow-step-speakers">
           <p className="eyebrow">步骤 03</p>
@@ -1313,6 +1376,7 @@ function VideoPage({ videos, isLoading }) {
               {speakers?.status === "running" && "正在提取候选说话人"}
               {speakers?.status === "completed" && "候选说话人字幕已生成"}
               {speakers?.status === "failed" && "处理失败"}
+              {speakers?.status === "cancelled" && "已取消"}
               {speakers?.status === "unavailable" && "不可执行"}
               {(!speakers || speakers.status === "blocked") && "等待 DX 对白轨"}
               {speakers?.status === "ready" && "可以开始"}
@@ -1320,6 +1384,8 @@ function VideoPage({ videos, isLoading }) {
             <small>
               {speakers?.status === "running"
                 ? "WhisperX 正在后台执行，页面会自动刷新状态。"
+                : speakers?.status === "cancelled"
+                  ? "任务已取消，可以重新执行。"
                 : speakers?.status === "failed"
                   ? "WhisperX 上次执行失败，可以查看错误信息后重新执行。"
                   : speakers?.canRun
@@ -1368,6 +1434,18 @@ function VideoPage({ videos, isLoading }) {
                 ? "重新生成候选说话人"
                 : "开始提取候选说话人"}
           </button>
+          <CancelTaskButton
+            busy={cancellingWorkflow === "whisperx-speakers"}
+            visible={speakers?.status === "running"}
+            onClick={() =>
+              cancelWorkflow(
+                "whisperx-speakers",
+                "whisperx-speakers",
+                setSpeakers,
+                setSpeakersError,
+              )
+            }
+          />
           </div>
         </WorkflowStageSection>
         <WorkflowStageSection group={workflowStageById.subtitles}>
@@ -1380,6 +1458,7 @@ function VideoPage({ videos, isLoading }) {
               {finalSubtitles?.status === "running" && "正在合并字幕"}
               {finalSubtitles?.status === "completed" && "最终中文字幕已生成"}
               {finalSubtitles?.status === "failed" && "合并失败"}
+              {finalSubtitles?.status === "cancelled" && "已取消"}
               {finalSubtitles?.status === "unavailable" && "不可执行"}
               {(!finalSubtitles || finalSubtitles.status === "blocked") && "等待合并输入"}
               {finalSubtitles?.status === "ready" && "可以开始"}
@@ -1387,6 +1466,8 @@ function VideoPage({ videos, isLoading }) {
             <small>
               {finalSubtitles?.status === "running"
                 ? "正在将 OCR 字幕与候选说话人字幕合并。"
+                : finalSubtitles?.status === "cancelled"
+                  ? "任务已取消，可以重新执行。"
                 : finalSubtitles?.canRun
                   ? "两项 SRT 输入文件已齐全，可以生成完整中文字幕。"
                   : "需先生成 WhisperX SRT 与 OCR 标点修复 SRT。"}
@@ -1429,6 +1510,18 @@ function VideoPage({ videos, isLoading }) {
                 ? "重新生成最终中文字幕"
                 : "生成最终中文字幕"}
           </button>
+          <CancelTaskButton
+            busy={cancellingWorkflow === "final-subtitles"}
+            visible={finalSubtitles?.status === "running"}
+            onClick={() =>
+              cancelWorkflow(
+                "final-subtitles",
+                "final-subtitles",
+                setFinalSubtitles,
+                setFinalSubtitlesError,
+              )
+            }
+          />
         </div>
         <div className="workflow-card manual-step" id="workflow-step-translation">
           <p className="eyebrow">步骤 05</p>
@@ -1632,6 +1725,7 @@ function VideoPage({ videos, isLoading }) {
                 "正在合成英文混音"}
               {englishDubbing?.status === "completed" && "英文成片混音已生成"}
               {englishDubbing?.status === "failed" && "处理失败"}
+              {englishDubbing?.status === "cancelled" && "已取消"}
               {englishDubbing?.status === "unavailable" && "不可执行"}
               {(!englishDubbing || englishDubbing.status === "blocked") &&
                 (missingEnglishDubbingInputs.length > 0 ? "等待必要输入就绪" : "等待英文字幕与音轨")}
@@ -1640,6 +1734,8 @@ function VideoPage({ videos, isLoading }) {
             <small>
               {englishDubbing?.status === "running"
                 ? "任务包含字幕预检、分段切割、增量配音和整轨混音，页面会自动刷新状态。"
+                : englishDubbing?.status === "cancelled"
+                  ? "任务已取消，可以重新执行。已生成且未过期的片段会继续复用。"
                 : englishDubbing?.canRun
                   ? englishDubbing?.mixOutdated
                     ? "译稿或素材已变化，需要重新生成英文混音。"
@@ -1696,6 +1792,18 @@ function VideoPage({ videos, isLoading }) {
                 ? "重新生成英文混音"
                 : "开始英文配音与混音"}
           </button>
+          <CancelTaskButton
+            busy={cancellingWorkflow === "english-dubbing-mix"}
+            visible={englishDubbing?.status === "running"}
+            onClick={() =>
+              cancelWorkflow(
+                "english-dubbing-mix",
+                "english-dubbing-mix",
+                setEnglishDubbing,
+                setEnglishDubbingError,
+              )
+            }
+          />
         </div>
         <div className="workflow-card manual-step redub-step">
           <p className="eyebrow">步骤 07</p>
@@ -1765,6 +1873,7 @@ function VideoPage({ videos, isLoading }) {
               {finalVideo?.status === "running" && "正在生成最终成片"}
               {finalVideo?.status === "completed" && "最终英文成片已生成"}
               {finalVideo?.status === "failed" && "成片生成失败"}
+              {finalVideo?.status === "cancelled" && "已取消"}
               {finalVideo?.status === "unavailable" && "不可执行"}
               {(!finalVideo || finalVideo.status === "blocked") && "等待英文混音与字幕"}
               {finalVideo?.status === "ready" && "可以开始"}
@@ -1772,6 +1881,8 @@ function VideoPage({ videos, isLoading }) {
             <small>
               {finalVideo?.status === "running"
                 ? "正在编码视频、烧录字幕并替换音频，页面会自动刷新状态。"
+                : finalVideo?.status === "cancelled"
+                  ? "任务已取消，可以按当前样式重新生成。"
                 : finalVideo?.status === "failed"
                   ? "最终成片上次生成失败，可以查看错误信息后重新生成。"
                   : finalVideo?.canRun
@@ -1911,6 +2022,18 @@ function VideoPage({ videos, isLoading }) {
                 ? "按当前样式重新生成最终成片"
                 : "替换音频并生成最终成片"}
           </button>
+          <CancelTaskButton
+            busy={cancellingWorkflow === "final-video"}
+            visible={finalVideo?.status === "running"}
+            onClick={() =>
+              cancelWorkflow(
+                "final-video",
+                "final-video",
+                setFinalVideo,
+                setFinalVideoError,
+              )
+            }
+          />
           </div>
         </WorkflowStageSection>
       </section>

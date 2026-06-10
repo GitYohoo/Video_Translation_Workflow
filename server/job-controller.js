@@ -1,16 +1,29 @@
 import { jobIdFor } from "./job-store.js";
+import { recoverWorkflowTask } from "./workflow-job-state.js";
 
 export function createJobController({ jobStore, taskRegistry }) {
+  function normalizedJob(job) {
+    if (!job) {
+      return null;
+    }
+    const activeTask = taskRegistry.get(job.id);
+    const recovered = activeTask?.status
+      ? { ...job, ...activeTask }
+      : recoverWorkflowTask(null, job);
+    const { cancel: _cancel, ...publicJob } = recovered;
+    return publicJob;
+  }
+
   async function get(videoId, workflow) {
-    return jobStore.readJob(jobIdFor(videoId, workflow));
+    return normalizedJob(await jobStore.readJob(jobIdFor(videoId, workflow)));
   }
 
   async function list(videoId) {
-    return jobStore.listJobs({ videoId });
+    return (await jobStore.listJobs({ videoId })).map(normalizedJob);
   }
 
   async function cancel(videoId, workflow, reason = "用户取消") {
-    const job = await get(videoId, workflow);
+    const job = await jobStore.readJob(jobIdFor(videoId, workflow));
     if (!job) {
       throw new Error(`找不到任务：${workflow}`);
     }

@@ -766,6 +766,15 @@ button {
   color: #b43c3c;
 }
 
+.step-status.cancelled {
+  background: #f5f6f8;
+  border-color: #d8dde6;
+}
+
+.step-status.cancelled strong {
+  color: #596579;
+}
+
 .step-status.blocked {
   background: #fff8ec;
   border-color: #fde4ad;
@@ -968,6 +977,12 @@ button {
 .workflow-action {
   display: flex;
   justify-content: center;
+  width: 100%;
+}
+
+.workflow-cancel-action {
+  color: #a23b3b;
+  margin-top: 8px;
   width: 100%;
 }
 
