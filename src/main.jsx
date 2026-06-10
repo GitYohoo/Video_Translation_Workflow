@@ -10,6 +10,7 @@ import {
   useParams,
 } from "react-router-dom";
 import { artifactDisplayName } from "./path-display.js";
+import { buildWorkflowOverview } from "./workflow-summary.js";
 import "./styles.css";
 
 const defaultFinalVideoStyle = {
@@ -243,6 +244,52 @@ function VideoThumbnail({ video }) {
       loading="lazy"
       src={video.thumbnailUrl}
     />
+  );
+}
+
+function ProjectWorkflowOverview({ overview, nextDisabled, onRunNext, onStepSelect }) {
+  const nextAction = overview.nextAction;
+  return (
+    <section className="workflow-overview" aria-label="项目进度总览">
+      <div className="overview-copy">
+        <p className="eyebrow">项目进度</p>
+        <h2>{overview.headline}</h2>
+        <p>{overview.detail}</p>
+        <div className="overview-meter" aria-label={`主流程完成 ${overview.percent}%`}>
+          <span style={{ width: `${overview.percent}%` }} />
+        </div>
+        <small>
+          已完成 {overview.completedCount} / {overview.totalCount} 个主阶段
+        </small>
+      </div>
+      <div className="overview-action">
+        {nextAction ? (
+          <button
+            className="primary-button overview-next-button"
+            disabled={nextDisabled || nextAction.disabled}
+            type="button"
+            onClick={onRunNext}
+          >
+            {nextAction.label}
+          </button>
+        ) : (
+          <strong className="overview-complete">主流程已完成</strong>
+        )}
+      </div>
+      <ol className="overview-steps">
+        {overview.steps.map((step) => (
+          <li key={step.id} className={`overview-step ${step.state}`}>
+            <button type="button" onClick={() => onStepSelect(step.id)}>
+              <span className="overview-step-index">{String(step.index).padStart(2, "0")}</span>
+              <span>
+                <strong>{step.title}</strong>
+                <small>{step.label}</small>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }
 
@@ -972,6 +1019,70 @@ function VideoPage({ videos, isLoading }) {
   const sourceDisplayName = record.sourcePath
     ? artifactDisplayName({ path: record.sourcePath })
     : "未记录原视频路径，请重新添加原视频以执行工作流。";
+  const workflowOverview = buildWorkflowOverview({
+    storageMode: record.storageMode,
+    separation,
+    ocr,
+    speakers,
+    finalSubtitles,
+    canTranslate,
+    subtitleEditorComplete,
+    englishDubbing,
+    finalVideo,
+  });
+  const scrollToWorkflowStep = (stepId) => {
+    document.getElementById(`workflow-step-${stepId}`)?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  };
+  const overviewActionDisabledById = {
+    separation:
+      isStartingSeparation ||
+      separation?.status === "running" ||
+      record.storageMode !== "reference",
+    ocr: isStartingOcr || ocr?.status === "running" || record.storageMode !== "reference",
+    speakers:
+      isStartingSpeakers ||
+      speakers?.status === "running" ||
+      !speakers?.canRun ||
+      record.storageMode !== "reference",
+    finalSubtitles:
+      isStartingFinalSubtitles ||
+      finalSubtitles?.status === "running" ||
+      !finalSubtitles?.canRun ||
+      record.storageMode !== "reference",
+    translation: !canTranslate,
+    englishDubbing:
+      isStartingEnglishDubbing ||
+      englishDubbing?.status === "running" ||
+      !englishDubbing?.canRun ||
+      record.storageMode !== "reference",
+    finalVideo:
+      isStartingFinalVideo ||
+      finalVideo?.status === "running" ||
+      !finalVideo?.canRun ||
+      record.storageMode !== "reference",
+  };
+  const runOverviewNext = () => {
+    const actionId = workflowOverview.nextAction?.id;
+    if (!actionId) {
+      return;
+    }
+    if (actionId === "translation") {
+      scrollToWorkflowStep(actionId);
+      return;
+    }
+    const handlers = {
+      separation: runSeparation,
+      ocr: runOcr,
+      speakers: runSpeakers,
+      finalSubtitles: runFinalSubtitles,
+      englishDubbing: runEnglishDubbing,
+      finalVideo: runFinalVideo,
+    };
+    handlers[actionId]?.();
+  };
 
   return (
     <main className="detail-page">
@@ -994,9 +1105,18 @@ function VideoPage({ videos, isLoading }) {
           {record.storageMode === "reference" ? "原路径已记录" : "待重新选择原视频"}
         </span>
       </header>
+      <ProjectWorkflowOverview
+        overview={workflowOverview}
+        nextDisabled={Boolean(
+          workflowOverview.nextAction &&
+            overviewActionDisabledById[workflowOverview.nextAction.id],
+        )}
+        onRunNext={runOverviewNext}
+        onStepSelect={scrollToWorkflowStep}
+      />
       {openPathError && <p className="workflow-error page-error">{openPathError}</p>}
       <section className="project-content">
-        <div className="workflow-card">
+        <div className="workflow-card" id="workflow-step-separation">
           <p className="eyebrow">步骤 01</p>
           <h2>BS-RoFormer 二轨分离</h2>
           <p>从原视频生成 DX 对白轨与 MX+FX 背景轨，为后续字幕与配音阶段提供素材。</p>
@@ -1046,7 +1166,7 @@ function VideoPage({ videos, isLoading }) {
                 : "开始二轨分离"}
           </button>
         </div>
-        <div className="workflow-card">
+        <div className="workflow-card" id="workflow-step-ocr">
           <p className="eyebrow">步骤 02</p>
           <h2>GPU OCR + FunASR 标点恢复</h2>
           <p>从视频画面的硬字幕提取中文字幕，并恢复标点，生成可用于后续处理的 OCR 字幕。</p>
@@ -1099,7 +1219,7 @@ function VideoPage({ videos, isLoading }) {
                 : "开始提取 OCR 字幕"}
           </button>
         </div>
-        <div className="workflow-card">
+        <div className="workflow-card" id="workflow-step-speakers">
           <p className="eyebrow">步骤 03</p>
           <h2>WhisperX 候选说话人</h2>
           <p>读取 DX 对白轨进行中文转写、时间对齐和候选说话人区分，为字幕角色归属提供参考。</p>
@@ -1164,7 +1284,7 @@ function VideoPage({ videos, isLoading }) {
                 : "开始提取候选说话人"}
           </button>
         </div>
-        <div className="workflow-card">
+        <div className="workflow-card" id="workflow-step-finalSubtitles">
           <p className="eyebrow">步骤 04</p>
           <h2>合并最终中文字幕</h2>
           <p>将 OCR 标点字幕作为正文，合并 WhisperX 候选说话人标记，生成完整中文字幕文件。</p>
@@ -1223,7 +1343,7 @@ function VideoPage({ videos, isLoading }) {
                 : "生成最终中文字幕"}
           </button>
         </div>
-        <div className="workflow-card manual-step">
+        <div className="workflow-card manual-step" id="workflow-step-translation">
           <p className="eyebrow">步骤 05</p>
           <h2>角色校对与英文翻译</h2>
           <p>将最终中文字幕文件交给 Gemini 生成 JSON：逐条英文显示字幕和整句配音分段建议。读取后可校对角色与译文，配音阶段会按整句时间窗切割原始对白作为参考音色。</p>
@@ -1397,7 +1517,7 @@ function VideoPage({ videos, isLoading }) {
             <p className="workflow-error">{subtitleEditorError}</p>
           )}
         </div>
-        <div className="workflow-card manual-step">
+        <div className="workflow-card manual-step" id="workflow-step-englishDubbing">
           <p className="eyebrow">步骤 06</p>
           <h2>VoxCPM 英文配音与混音</h2>
           <p>先将英文译稿同步到主时间轴并预检，再使用 VoxCPM 仅更新受影响配音片段，最后与 MX+FX 背景底轨混音。</p>
@@ -1545,7 +1665,7 @@ function VideoPage({ videos, isLoading }) {
           {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
           {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
         </div>
-        <div className="workflow-card manual-step final-video-step">
+        <div className="workflow-card manual-step final-video-step" id="workflow-step-finalVideo">
           <p className="eyebrow">步骤 08</p>
           <h2>替换英文音轨并烧录字幕</h2>
           <p>用英文成片混音替换原视频音频，并将受控英文字幕按所选样式烧录到视频中，输出最终英文成片。</p>

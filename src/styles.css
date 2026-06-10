@@ -427,6 +427,187 @@ button {
   color: #996006;
 }
 
+.workflow-overview {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  display: grid;
+  gap: 18px 22px;
+  grid-template-columns: minmax(280px, 1fr) auto;
+  margin: -8px 0 24px;
+  padding: 22px;
+}
+
+.overview-copy h2 {
+  color: #151d2c;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: 0;
+  margin: 0 0 8px;
+}
+
+.overview-copy p {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.65;
+  margin: 0 0 14px;
+  max-width: 720px;
+}
+
+.overview-copy small {
+  color: #516076;
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.overview-meter {
+  background: #edf1f6;
+  border-radius: 999px;
+  height: 10px;
+  max-width: 520px;
+  overflow: hidden;
+}
+
+.overview-meter span {
+  background: linear-gradient(90deg, #2872ff, #2fbf71);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 220ms ease;
+}
+
+.overview-action {
+  align-items: flex-start;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 30px;
+}
+
+.overview-next-button {
+  min-width: 168px;
+  white-space: nowrap;
+}
+
+.overview-complete {
+  background: #effbf4;
+  border: 1px solid #bce7ce;
+  border-radius: 10px;
+  color: #14854d;
+  font-size: 14px;
+  padding: 13px 16px;
+  white-space: nowrap;
+}
+
+.overview-steps {
+  border-top: 1px solid #edf1f6;
+  display: grid;
+  gap: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(7, minmax(108px, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 14px 0 0;
+}
+
+.overview-step {
+  border-left: 1px solid #edf1f6;
+  min-width: 0;
+}
+
+.overview-step:first-child {
+  border-left: 0;
+}
+
+.overview-step button {
+  align-items: flex-start;
+  background: transparent;
+  border: 0;
+  color: #263248;
+  display: flex;
+  gap: 9px;
+  min-height: 58px;
+  padding: 5px 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.overview-step button:hover {
+  background: #f7f9fc;
+}
+
+.overview-step-index {
+  align-items: center;
+  background: #edf1f6;
+  border-radius: 999px;
+  color: #657286;
+  display: inline-flex;
+  flex: 0 0 28px;
+  font-size: 11px;
+  font-weight: 700;
+  height: 28px;
+  justify-content: center;
+}
+
+.overview-step strong,
+.overview-step small {
+  display: block;
+  min-width: 0;
+}
+
+.overview-step strong {
+  font-size: 13px;
+  margin: 1px 0 4px;
+}
+
+.overview-step small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.overview-step.completed .overview-step-index {
+  background: #e5f7ed;
+  color: #14854d;
+}
+
+.overview-step.completed strong {
+  color: #14854d;
+}
+
+.overview-step.ready .overview-step-index {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.overview-step.ready strong {
+  color: var(--accent);
+}
+
+.overview-step.running .overview-step-index {
+  background: #eef6ff;
+  color: #1f66d1;
+}
+
+.overview-step.running strong {
+  color: #1f66d1;
+}
+
+.overview-step.blocked .overview-step-index {
+  background: #fff4df;
+  color: #996006;
+}
+
+.overview-step.failed .overview-step-index {
+  background: #fff2f2;
+  color: #b43c3c;
+}
+
+.overview-step.failed strong {
+  color: #b43c3c;
+}
+
 .project-content {
   display: grid;
   gap: 22px;
@@ -1223,6 +1404,28 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .workflow-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-action {
+    justify-content: flex-start;
+    padding-top: 0;
+  }
+
+  .overview-steps {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+
+  .overview-step {
+    border-left: 0;
+    border-top: 1px solid #edf1f6;
+  }
+
+  .overview-step:nth-child(-n + 2) {
+    border-top: 0;
+  }
+
   .workflow-card {
     width: 100%;
   }
@@ -1241,13 +1444,20 @@ button {
 }
 
 @media (max-width: 720px) {
+  .application {
+    display: block;
+  }
+
   .sidebar {
-    flex-basis: 158px;
+    min-height: auto;
     padding: 16px 9px 10px;
+    width: 100%;
   }
 
   .brand {
+    border-bottom: 0;
     gap: 8px;
+    margin-bottom: 10px;
     padding: 0 5px 14px;
   }
 
@@ -1258,6 +1468,17 @@ button {
   .brand-mark {
     height: 31px;
     width: 31px;
+  }
+
+  .video-list {
+    flex-direction: row;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 0 0 4px;
+  }
+
+  .video-entry {
+    flex: 0 0 222px;
   }
 
   .video-item {
@@ -1335,6 +1556,8 @@ button {
   }
 
   .detail-header {
+    flex-direction: column;
+    gap: 12px;
     margin-bottom: 19px;
   }
 
@@ -1349,6 +1572,33 @@ button {
 
   .phase-tag {
     display: none;
+  }
+
+  .workflow-overview {
+    margin-bottom: 18px;
+    padding: 17px;
+  }
+
+  .overview-copy h2 {
+    font-size: 20px;
+  }
+
+  .overview-next-button,
+  .overview-complete {
+    width: 100%;
+  }
+
+  .overview-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-step,
+  .overview-step:nth-child(-n + 2) {
+    border-top: 1px solid #edf1f6;
+  }
+
+  .overview-step:first-child {
+    border-top: 0;
   }
 
   .project-content {
