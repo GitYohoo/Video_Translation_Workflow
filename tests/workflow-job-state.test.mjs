@@ -27,12 +27,40 @@ test("marks persisted running jobs as interrupted after restart", () => {
   const task = recoverWorkflowTask(null, {
     status: "running",
     startedAt: "before-restart",
+    attempt: 3,
     error: null,
   });
 
   assert.equal(task.status, "failed");
   assert.equal(task.startedAt, "before-restart");
+  assert.equal(task.attempt, 3);
   assert.match(task.error, /上次运行中断/);
+});
+
+test("marks persisted queued jobs as interrupted after restart", () => {
+  const task = recoverWorkflowTask(null, {
+    status: "queued",
+    queuedAt: "before-restart",
+    attempt: 2,
+    error: null,
+  });
+
+  assert.equal(task.status, "failed");
+  assert.equal(task.attempt, 2);
+  assert.match(task.error, /尚未开始即中断/);
+});
+
+test("keeps persisted cancelled jobs available for display", () => {
+  const task = recoverWorkflowTask(null, {
+    status: "cancelled",
+    attempt: 1,
+    cancellationReason: "用户取消",
+    error: null,
+  });
+
+  assert.equal(task.status, "cancelled");
+  assert.equal(task.cancellationReason, "用户取消");
+  assert.equal(task.error, null);
 });
 
 test("returns null when no task exists", () => {
@@ -44,6 +72,7 @@ test("builds active task state from a persisted running job", () => {
     id: "video-1_whisperx-speakers",
     status: "running",
     stage: "alignment",
+    attempt: 2,
     startedAt: "start",
     finishedAt: null,
     logPath: "D:\\logs\\whisperx.log",
@@ -54,6 +83,7 @@ test("builds active task state from a persisted running job", () => {
     id: "video-1_whisperx-speakers",
     status: "running",
     stage: "alignment",
+    attempt: 2,
     startedAt: "start",
     finishedAt: null,
     logPath: "D:\\logs\\whisperx.log",

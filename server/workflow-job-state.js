@@ -3,6 +3,7 @@ export function activeTaskFromJob(job) {
     id: job.id,
     status: "running",
     stage: job.stage ?? null,
+    attempt: job.attempt ?? 1,
     startedAt: job.startedAt,
     finishedAt: null,
     logPath: job.logPath ?? null,
@@ -17,12 +18,16 @@ export function recoverWorkflowTask(activeTask, persistedJob) {
   if (!persistedJob) {
     return null;
   }
-  if (persistedJob.status !== "running") {
+  if (!["queued", "running"].includes(persistedJob.status)) {
     return persistedJob;
   }
   return {
     ...persistedJob,
     status: "failed",
-    error: persistedJob.error || "任务上次运行中断，请重新执行。",
+    error:
+      persistedJob.error ||
+      (persistedJob.status === "queued"
+        ? "任务上次尚未开始即中断，请重新执行。"
+        : "任务上次运行中断，请重新执行。"),
   };
 }
