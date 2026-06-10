@@ -1,23 +1,79 @@
 {
   "name": "video-translation-workflow",
+  "productName": "影译工坊",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "description": "面向本地视频翻译制作流程的桌面工作台",
+  "author": "影译工坊",
+  "main": "electron/main.js",
   "type": "module",
   "scripts": {
     "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\ensure_dev_ports_free.ps1 && concurrently \"vite\" \"node server/index.js\"",
     "build": "vite build",
+    "desktop": "npm run build && electron .",
+    "desktop:pack": "npm run build && electron-builder --dir",
+    "desktop:dist": "npm run build && electron-builder --win nsis portable",
     "test:node": "node --test tests/*.test.mjs",
     "start": "node server/index.js"
   },
   "dependencies": {
     "express": "^5.1.0",
+    "lucide-react": "^1.17.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^6.30.1"
+    "react-router-dom": "^6.30.4"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.5.2",
     "concurrently": "^9.1.2",
+    "electron": "^42.4.0",
+    "electron-builder": "^26.15.2",
     "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "com.yingyigongfang.desktop",
+    "productName": "影译工坊",
+    "asar": false,
+    "compression": "normal",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "server/**/*",
+      "scripts/**/*",
+      "electron/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "影译工坊",
+      "artifactName": "影译工坊-安装版-${version}-${arch}.${ext}"
+    },
+    "portable": {
+      "artifactName": "影译工坊-便携版-${version}-${arch}.${ext}"
+    }
   }
 }
