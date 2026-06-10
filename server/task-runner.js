@@ -72,7 +72,12 @@ export function createTaskRunner({
       output.end(`\n任务状态：${status}\n`);
     }
 
-    child = spawnProcess(command, processArguments, spawnOptions);
+    try {
+      child = spawnProcess(command, processArguments, spawnOptions);
+    } catch (error) {
+      await finishTask("failed", startFailureMessage(error));
+      throw error;
+    }
     child.stdout?.pipe(output, { end: false });
     child.stderr?.pipe(output, { end: false });
     child.on("error", (error) => {

@@ -20,7 +20,7 @@ function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function runnerFixture() {
+function runnerFixture(overrides = {}) {
   const child = new FakeChildProcess();
   const output = new PassThrough();
   const outputChunks = [];
@@ -47,7 +47,7 @@ function runnerFixture() {
   const runner = createTaskRunner({
     jobStore,
     taskRegistry,
-    spawnProcess: () => child,
+    spawnProcess: overrides.spawnProcess || (() => child),
     createOutput: () => output,
     terminateProcess: async (process) => {
       terminatedChildren.push(process);
@@ -164,4 +164,32 @@ test("cancels the active process without allowing close to overwrite the state",
 
   assert.equal(task.status, "cancelled");
   assert.equal(fixture.calls.some(([name]) => name === "fail"), false);
+});
+
+test("cleans up and persists failure when spawning throws synchronously", async () => {
+  const fixture = runnerFixture({
+    spawnProcess: () => {
+      throw new Error("invalid command");
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      fixture.runner.start({
+        videoId: "video-5",
+        workflow: "bs-roformer",
+        logPath: "D:\\logs\\bs-spawn-error.log",
+        activeTasks: fixture.activeTasks,
+        command: "",
+      }),
+    /invalid command/,
+  );
+
+  assert.equal(fixture.activeTasks.has("video-5"), false);
+  assert.equal(fixture.taskRegistry.get("video-5-bs-roformer"), null);
+  assert.deepEqual(fixture.calls.at(-1), [
+    "fail",
+    "video-5-bs-roformer",
+    "任务启动失败：invalid command",
+  ]);
 });
