@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>持久化任务系统完整迁移设计</title>
+  <style>
+    body { color: #1f2937; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; line-height: 1.75; margin: 32px auto; max-width: 980px; padding: 0 24px; }
+    h1, h2 { color: #111827; line-height: 1.3; }
+    code { background: #f3f4f6; border-radius: 4px; padding: 2px 5px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #d1d5db; padding: 9px 11px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; }
+    .note { background: #eff6ff; border-left: 4px solid #2563eb; padding: 12px 16px; }
+  </style>
+</head>
+<body>
+  <h1>持久化任务系统完整迁移设计</h1>
+  <p class="note">本阶段只解决任务状态可维护、可恢复和可控制的问题。继续使用本地 JSON 文件，不引入数据库，不同时改设置页、项目 schema 或大规模前端结构。</p>
+
+  <h2>目标</h2>
+  <ul>
+    <li>所有后台工作流统一写入 <code>data/jobs/*.json</code>。</li>
+    <li>任务状态统一为 <code>queued</code>、<code>running</code>、<code>completed</code>、<code>failed</code>、<code>cancelled</code>。</li>
+    <li>每次重新执行增加 <code>attempt</code>，保留稳定 job id，便于前端和日志查询。</li>
+    <li>服务重启后，遗留的 <code>queued</code> 或 <code>running</code> 状态显示为“上次运行中断，可重新执行”。</li>
+    <li>运行中任务可取消；取消必须终止当前子进程并持久化状态。</li>
+    <li>重试继续调用现有工作流入口，复用已经生成且未过期的产物。</li>
+  </ul>
+
+  <h2>范围</h2>
+  <table>
+    <thead><tr><th>包含</th><th>暂不包含</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>Job Store 状态机、attempt、列表查询、取消状态；最终字幕、英文配音、单段重配、最终成片持久化；统一任务查询和取消 API；前端运行中取消入口。</td>
+        <td>跨机器任务、数据库、任务历史明细表、断点恢复模型内存、GPU 调度队列、设置页面和 catalog schema migration。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>组件边界</h2>
+  <ul>
+    <li><code>server/job-store.js</code>：只负责状态校验、原子读写、attempt 和任务列表。</li>
+    <li><code>server/task-registry.js</code>：只保存当前进程内可取消任务，提供注册、读取、完成和取消操作。</li>
+    <li><code>server/workflow-job-state.js</code>：把内存任务和磁盘任务合成为 API 可展示状态。</li>
+    <li><code>server/index.js</code>：本阶段仍负责工作流编排，但所有后台流程必须通过统一 Job Store 和 Task Registry 更新状态。</li>
+  </ul>
+
+  <h2>状态与恢复规则</h2>
+  <table>
+    <thead><tr><th>状态</th><th>含义</th><th>允许操作</th></tr></thead>
+    <tbody>
+      <tr><td><code>queued</code></td><td>已创建但尚未开始执行。</td><td>取消</td></tr>
+      <tr><td><code>running</code></td><td>子进程正在执行。</td><td>取消</td></tr>
+      <tr><td><code>completed</code></td><td>流程完成且状态已持久化。</td><td>重新执行</td></tr>
+      <tr><td><code>failed</code></td><td>启动、脚本或输出处理失败。</td><td>重试</td></tr>
+      <tr><td><code>cancelled</code></td><td>用户主动取消或取消发生在排队阶段。</td><td>重试</td></tr>
+    </tbody>
+  </table>
+  <p>服务启动后不会自动重启模型任务。若磁盘记录仍为 <code>queued</code> 或 <code>running</code>，状态查询将其解释为中断失败，并给出重新执行提示。已有产物仍由各工作流的过期检测决定是否复用。</p>
+
+  <h2>API</h2>
+  <ul>
+    <li><code>GET /api/videos/:id/jobs</code>：返回项目任务列表。</li>
+    <li><code>GET /api/videos/:id/jobs/:workflow</code>：返回单个稳定 job。</li>
+    <li><code>POST /api/videos/:id/jobs/:workflow/cancel</code>：取消当前运行或排队任务。</li>
+    <li>重试继续使用各工作流现有 <code>/run</code> 接口，避免维护第二套执行分发。</li>
+  </ul>
+
+  <h2>错误处理</h2>
+  <ul>
+    <li>取消不是失败，错误字段为空，使用 <code>cancellationReason</code> 记录原因。</li>
+    <li>子进程关闭事件必须先判断任务是否已取消，防止取消后又被覆盖成失败。</li>
+    <li>无法取消不存在或已结束的任务时返回可读错误，不静默成功。</li>
+    <li>任务状态写入失败必须记录到工作流日志，但不能造成服务崩溃。</li>
+  </ul>
+
+  <h2>验证标准</h2>
+  <ul>
+    <li>Node 单测覆盖五种状态、attempt、列表、重启中断解释和 Registry 取消。</li>
+    <li>所有工作流状态接口在服务重启后仍能读取最近任务结果。</li>
+    <li>运行中任务取消后，磁盘状态为 <code>cancelled</code>，关闭事件不会改写为 <code>failed</code>。</li>
+    <li><code>npm run test:node</code> 与 <code>npm run build</code> 通过。</li>
+  </ul>
+</body>
+</html>
