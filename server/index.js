@@ -13,6 +13,7 @@ import {
   projectWorkspaceDirectory,
 } from "./project-paths.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
+import { applySelectedSourceToRecord } from "./source-record.js";
 import { activeTaskFromJob, recoverWorkflowTask } from "./workflow-job-state.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -728,6 +729,19 @@ async function openProjectArtifact(record, requestedArtifactKey) {
   await openProjectPath(record, artifactPath);
 }
 
+async function sourceFileStatus(record) {
+  if (!record.sourcePath) {
+    return {
+      ready: false,
+      error: "该项目没有原视频路径，请重新选择原视频。",
+    };
+  }
+  return {
+    ready: await isFile(record.sourcePath),
+    error: `找不到原视频：${record.sourcePath}。请在页面顶部重新选择原视频。`,
+  };
+}
+
 function thumbnailPath(record) {
   return path.join(thumbnailDirectory, `${record.id}.jpg`);
 }
@@ -803,6 +817,25 @@ async function bsRoformerStatus(record) {
       error: "该项目没有可执行的原视频路径。",
     };
   }
+  const sourceStatus = await sourceFileStatus(record);
+  if (!sourceStatus.ready) {
+    const dialogueReady = await isFile(outputs.dialoguePath);
+    const backgroundReady = await isFile(outputs.backgroundPath);
+    return {
+      status: "unavailable",
+      sourceReady: false,
+      error: sourceStatus.error,
+      outputDirectory: outputs.outputDirectory,
+      outputDirectoryReady: await isDirectory(outputs.outputDirectory),
+      outputs: {
+        dialogue: { path: outputs.dialoguePath, ready: dialogueReady },
+        background: { path: outputs.backgroundPath, ready: backgroundReady },
+      },
+      startedAt: null,
+      finishedAt: null,
+      logPath: null,
+    };
+  }
   const activeTask = activeBsRoformerTasks.get(record.id);
   const persistedJob = await jobStore.readJob(jobIdFor(record.id, "bs-roformer"));
   const task = recoverWorkflowTask(activeTask, persistedJob);
@@ -835,6 +868,10 @@ async function startBsRoformer(record) {
   const paths = bsRoformerOutputPaths(record);
   if (!paths) {
     throw new Error("该项目没有原视频路径，无法执行二轨分离。");
+  }
+  const sourceStatus = await sourceFileStatus(record);
+  if (!sourceStatus.ready) {
+    throw new Error(sourceStatus.error);
   }
   if (activeBsRoformerTasks.get(record.id)?.status === "running") {
     return bsRoformerStatus(record);
@@ -923,6 +960,26 @@ async function ocrStatus(record) {
       error: "该项目没有可执行的原视频路径。",
     };
   }
+  const sourceStatus = await sourceFileStatus(record);
+  if (!sourceStatus.ready) {
+    const srtReady = await isFile(outputs.srtPath);
+    const reportReady = await isFile(outputs.reportPath);
+    return {
+      status: "unavailable",
+      sourceReady: false,
+      error: sourceStatus.error,
+      outputDirectory: outputs.outputDirectory,
+      outputDirectoryReady: await isDirectory(outputs.outputDirectory),
+      outputs: {
+        srt: { path: outputs.srtPath, ready: srtReady },
+        report: { path: outputs.reportPath, ready: reportReady },
+      },
+      startedAt: null,
+      finishedAt: null,
+      stage: null,
+      logPath: null,
+    };
+  }
   const activeTask = activeOcrTasks.get(record.id);
   const persistedJob = await jobStore.readJob(jobIdFor(record.id, OCR_SUBTITLES_WORKFLOW));
   const task = recoverWorkflowTask(activeTask, persistedJob);
@@ -956,6 +1013,10 @@ async function startOcr(record) {
   const paths = ocrOutputPaths(record);
   if (!paths) {
     throw new Error("该项目没有原视频路径，无法执行 OCR 字幕提取。");
+  }
+  const sourceStatus = await sourceFileStatus(record);
+  if (!sourceStatus.ready) {
+    throw new Error(sourceStatus.error);
   }
   if (activeOcrTasks.get(record.id)?.status === "running") {
     return ocrStatus(record);
@@ -2284,6 +2345,28 @@ app.post("/api/videos/select-source", async (_request, response, next) => {
     }
     const [record] = await addReferencePaths([sourcePath]);
     response.status(201).json(record);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/source/select", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    const sourcePath = await selectVideoPath();
+    if (!sourcePath) {
+      response.status(204).end();
+      return;
+    }
+    const incoming = await buildReferenceRecord(sourcePath);
+    applySelectedSourceToRecord(video, incoming, runtimeSettings.projectWorkspaceRoot);
+    await writeCatalog(videos);
+    response.json(publicVideo(video));
   } catch (error) {
     next(error);
   }

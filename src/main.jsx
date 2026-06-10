@@ -448,6 +448,8 @@ function VideoPage({ videos, isLoading }) {
   const { videoId } = useParams();
   const [record, setRecord] = useState(null);
   const [notFound, setNotFound] = useState(false);
+  const [isReplacingSource, setIsReplacingSource] = useState(false);
+  const [sourceReplaceMessage, setSourceReplaceMessage] = useState("");
   const [separation, setSeparation] = useState(null);
   const [separationError, setSeparationError] = useState("");
   const [isStartingSeparation, setIsStartingSeparation] = useState(false);
@@ -520,6 +522,7 @@ function VideoPage({ videos, isLoading }) {
     setFinalVideo(null);
     setFinalVideoStyle(defaultFinalVideoStyle);
     setSeparationError("");
+    setSourceReplaceMessage("");
     setOcrError("");
     setSpeakersError("");
     setFinalSubtitlesError("");
@@ -1033,6 +1036,26 @@ function VideoPage({ videos, isLoading }) {
     }
   };
 
+  const replaceProjectSource = async () => {
+    setIsReplacingSource(true);
+    setSourceReplaceMessage("");
+    try {
+      const updated = await requestJson(`/api/videos/${record.id}/source/select`, {
+        method: "POST",
+      });
+      if (!updated) {
+        setSourceReplaceMessage("已取消重新选择原视频。");
+        return;
+      }
+      setRecord(updated);
+      setSourceReplaceMessage("原视频路径已更新，可以重新执行失败步骤。");
+    } catch (error) {
+      setSourceReplaceMessage(`重新选择原视频失败：${error.message}`);
+    } finally {
+      setIsReplacingSource(false);
+    }
+  };
+
   const openPath = async (artifactKey) => {
     setOpenPathError("");
     try {
@@ -1055,6 +1078,8 @@ function VideoPage({ videos, isLoading }) {
   const sourceDisplayName = record.sourcePath
     ? artifactDisplayName({ path: record.sourcePath })
     : "未记录原视频路径，请重新添加原视频以执行工作流。";
+  const sourceUnavailable = separation?.sourceReady === false || ocr?.sourceReady === false;
+  const sourceActionDisabled = record.storageMode !== "reference" || sourceUnavailable;
   const workflowOverview = buildWorkflowOverview({
     storageMode: record.storageMode,
     separation,
@@ -1076,8 +1101,8 @@ function VideoPage({ videos, isLoading }) {
     separation:
       isStartingSeparation ||
       separation?.status === "running" ||
-      record.storageMode !== "reference",
-    ocr: isStartingOcr || ocr?.status === "running" || record.storageMode !== "reference",
+      sourceActionDisabled,
+    ocr: isStartingOcr || ocr?.status === "running" || sourceActionDisabled,
     speakers:
       isStartingSpeakers ||
       speakers?.status === "running" ||
@@ -1137,10 +1162,21 @@ function VideoPage({ videos, isLoading }) {
             原视频：{sourceDisplayName}
           </p>
         </div>
-        <span className={`phase-tag ${record.storageMode === "reference" ? "" : "warning"}`}>
-          {record.storageMode === "reference" ? "原路径已记录" : "待重新选择原视频"}
-        </span>
+        <div className="detail-header-actions">
+          <span className={`phase-tag ${record.storageMode === "reference" ? "" : "warning"}`}>
+            {record.storageMode === "reference" ? "原路径已记录" : "待重新选择原视频"}
+          </span>
+          <button
+            className="secondary-button compact"
+            disabled={isReplacingSource}
+            type="button"
+            onClick={replaceProjectSource}
+          >
+            {isReplacingSource ? "等待选择..." : "重新选择原视频"}
+          </button>
+        </div>
       </header>
+      {sourceReplaceMessage && <p className="copy-status">{sourceReplaceMessage}</p>}
       <ProjectWorkflowOverview
         overview={workflowOverview}
         nextDisabled={Boolean(
@@ -1170,8 +1206,10 @@ function VideoPage({ videos, isLoading }) {
                 "音轨分离正在后台执行，页面会自动刷新状态。"}
               {separation?.status === "failed" &&
                 "上次处理失败，请查看下方错误信息后重新执行。"}
+              {separation?.status === "unavailable" && "请先在页面顶部重新选择原视频。"}
               {separation?.status !== "running" &&
                 separation?.status !== "failed" &&
+                separation?.status !== "unavailable" &&
                 "输出将写入原视频同级目录。"}
             </small>
           </div>
@@ -1195,7 +1233,7 @@ function VideoPage({ videos, isLoading }) {
             disabled={
               isStartingSeparation ||
               separation?.status === "running" ||
-              record.storageMode !== "reference"
+              sourceActionDisabled
             }
             type="button"
             onClick={runSeparation}
@@ -1227,8 +1265,10 @@ function VideoPage({ videos, isLoading }) {
                   : "GPU OCR 正在读取画面字幕，页面会自动刷新状态。")}
               {ocr?.status === "failed" &&
                 "上次处理失败，请查看下方错误信息后重新执行。"}
+              {ocr?.status === "unavailable" && "请先在页面顶部重新选择原视频。"}
               {ocr?.status !== "running" &&
                 ocr?.status !== "failed" &&
+                ocr?.status !== "unavailable" &&
                 "字幕结果将写入原视频同级目录。"}
             </small>
           </div>
@@ -1252,7 +1292,7 @@ function VideoPage({ videos, isLoading }) {
             disabled={
               isStartingOcr ||
               ocr?.status === "running" ||
-              record.storageMode !== "reference"
+              sourceActionDisabled
             }
             type="button"
             onClick={runOcr}

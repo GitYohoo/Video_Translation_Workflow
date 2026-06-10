@@ -455,6 +455,13 @@ button {
   color: #996006;
 }
 
+.detail-header-actions {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .workflow-overview {
   background: #fff;
   border: 1px solid var(--line);
@@ -1640,6 +1647,11 @@ button {
     flex-direction: column;
     gap: 12px;
     margin-bottom: 19px;
+  }
+
+  .detail-header-actions {
+    align-items: stretch;
+    width: 100%;
   }
 
   .detail-header h1 {
