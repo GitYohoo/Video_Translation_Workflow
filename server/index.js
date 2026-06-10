@@ -18,7 +18,9 @@ import { createJobRouter } from "./routes/job-routes.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
 import { applySelectedSourceToRecord } from "./source-record.js";
 import { createTaskRegistry } from "./task-registry.js";
+import { createTaskRunner } from "./task-runner.js";
 import { activeTaskFromJob, recoverWorkflowTask } from "./workflow-job-state.js";
+import { createBsRoformerWorkflow } from "./workflows/bs-roformer.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(serverDirectory, "..");
@@ -165,6 +167,40 @@ const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
 const jobStore = createJobStore(jobDirectory);
 const taskRegistry = createTaskRegistry();
 const jobController = createJobController({ jobStore, taskRegistry });
+const taskRunner = createTaskRunner({
+  jobStore,
+  taskRegistry,
+  terminateProcess: terminateChildProcess,
+});
+const bsRoformerWorkflow = createBsRoformerWorkflow({
+  activeTasks: activeBsRoformerTasks,
+  outputPaths: bsRoformerOutputPaths,
+  sourceFileStatus,
+  getStatus: bsRoformerStatus,
+  isFile,
+  ensureDirectory: (directory) => fs.mkdir(directory, { recursive: true }),
+  taskRunner,
+  configuration: {
+    pythonPath: bsRoformerPython,
+    coreScript: bsRoformerCoreScript,
+    runtimeDirectory: bsRoformerRuntimeDirectory,
+    temporaryDirectory: bsRoformerTempDirectory,
+    modelDirectory: bsRoformerModelDirectory,
+    logDirectory,
+    workingDirectory: workflowRootDirectory,
+    environment: {
+      ...process.env,
+      HF_HOME: "D:\\models\\huggingface",
+      HUGGINGFACE_HUB_CACHE: "D:\\models\\huggingface\\hub",
+      PIP_CACHE_DIR: "D:\\models\\pip-cache",
+      AUDIO_SEPARATOR_MODEL_DIR: bsRoformerModelDirectory,
+      TEMP: bsRoformerTempDirectory,
+      TMP: bsRoformerTempDirectory,
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8",
+    },
+  },
+});
 
 function registerCancelableTask({ task, childProcess, output }) {
   task.cancel = async () => {
@@ -892,91 +928,7 @@ async function bsRoformerStatus(record) {
 }
 
 async function startBsRoformer(record) {
-  const paths = bsRoformerOutputPaths(record);
-  if (!paths) {
-    throw new Error("该项目没有原视频路径，无法执行二轨分离。");
-  }
-  const sourceStatus = await sourceFileStatus(record);
-  if (!sourceStatus.ready) {
-    throw new Error(sourceStatus.error);
-  }
-  if (activeBsRoformerTasks.get(record.id)?.status === "running") {
-    return bsRoformerStatus(record);
-  }
-  if (!(await isFile(bsRoformerCoreScript))) {
-    throw new Error(`找不到 BS-RoFormer 核心脚本：${bsRoformerCoreScript}`);
-  }
-  if (!(await isFile(bsRoformerPython))) {
-    throw new Error(`找不到 BS-RoFormer Python 环境：${bsRoformerPython}`);
-  }
-
-  await fs.mkdir(bsRoformerTempDirectory, { recursive: true });
-  const logPath = path.join(logDirectory, `${record.id}_BS-RoFormer.log`);
-  const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
-  const job = await jobStore.startJob({
-    videoId: record.id,
-    workflow: "bs-roformer",
-    logPath,
-  });
-  const child = spawn(
-    bsRoformerPython,
-    [
-      bsRoformerCoreScript,
-      "--video",
-      record.sourcePath,
-      "--runtime-dir",
-      bsRoformerRuntimeDirectory,
-      "--output-root",
-      paths.outputDirectory,
-    ],
-    {
-      cwd: workflowRootDirectory,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        HF_HOME: "D:\\models\\huggingface",
-        HUGGINGFACE_HUB_CACHE: "D:\\models\\huggingface\\hub",
-        PIP_CACHE_DIR: "D:\\models\\pip-cache",
-        AUDIO_SEPARATOR_MODEL_DIR: bsRoformerModelDirectory,
-        TEMP: bsRoformerTempDirectory,
-        TMP: bsRoformerTempDirectory,
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-      },
-    },
-  );
-  const task = activeTaskFromJob(job);
-  activeBsRoformerTasks.set(record.id, task);
-  registerCancelableTask({ task, childProcess: () => child, output });
-  child.stdout.pipe(output, { end: false });
-  child.stderr.pipe(output, { end: false });
-  child.on("error", async (error) => {
-    if (task.status === "cancelled") {
-      return;
-    }
-    task.status = "failed";
-    task.error = error.message;
-    task.finishedAt = new Date().toISOString();
-    await jobStore.failJob(task.id, error.message);
-    finishRegisteredTask(task);
-    output.end(`\n任务启动失败：${error.message}\n`);
-  });
-  child.on("close", async (code) => {
-    if (["cancelled", "failed"].includes(task.status)) {
-      return;
-    }
-    task.status = code === 0 ? "completed" : "failed";
-    task.error = code === 0 ? null : `处理进程退出码：${code}`;
-    task.finishedAt = new Date().toISOString();
-    if (code === 0) {
-      await jobStore.finishJob(task.id, "completed");
-    } else {
-      await jobStore.failJob(task.id, task.error);
-    }
-    finishRegisteredTask(task);
-    output.end(`\n任务状态：${task.status}\n`);
-  });
-  return bsRoformerStatus(record);
+  return bsRoformerWorkflow.start(record);
 }
 
 async function ocrStatus(record) {
