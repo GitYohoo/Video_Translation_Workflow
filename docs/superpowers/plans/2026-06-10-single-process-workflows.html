@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>单进程工作流迁移实施计划</title>
+  <style>
+    body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; line-height: 1.7; margin: 40px auto; max-width: 960px; padding: 0 24px; color: #1f2937; }
+    h1, h2 { color: #111827; }
+    section { border-top: 1px solid #d1d5db; padding-top: 18px; margin-top: 24px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; }
+    .meta { border-left: 4px solid #2563eb; background: #eff6ff; padding: 12px 16px; }
+  </style>
+</head>
+<body>
+  <h1>单进程工作流迁移实施计划</h1>
+  <div class="meta">
+    <p><strong>目标：</strong>将 WhisperX、最终中文字幕和最终成片的持久化进程启动逻辑移出 <code>server/index.js</code>，统一使用 <code>task-runner</code>。</p>
+    <p><strong>约束：</strong>不改变 API、命令参数、环境变量、错误文案、状态计算和输出目录。</p>
+  </div>
+
+  <section>
+    <h2>任务 1：WhisperX 工作流</h2>
+    <ol>
+      <li>新增失败测试，覆盖缺少 DX 音轨、重复运行、依赖缺失与正常命令组装。</li>
+      <li>确认测试因模块不存在而失败。</li>
+      <li>新增 <code>server/workflows/whisperx.js</code>，只负责校验、目录准备、命令组装和调用 task runner。</li>
+      <li>接入 <code>server/index.js</code>，运行单测与全量 Node 测试。</li>
+      <li>提交 <code>refactor: extract whisperx workflow</code>。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 2：最终中文字幕工作流</h2>
+    <ol>
+      <li>新增失败测试，覆盖输入字幕缺失、重复运行、依赖缺失和参数组装。</li>
+      <li>新增 <code>server/workflows/final-subtitles.js</code> 并使用 task runner。</li>
+      <li>从 <code>server/index.js</code> 删除手工 spawn、日志和终态事件代码。</li>
+      <li>运行测试并提交 <code>refactor: extract final subtitles workflow</code>。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 3：最终成片工作流</h2>
+    <ol>
+      <li>新增失败测试，覆盖英文混音未完成、输入缺失、重复运行、依赖缺失、样式保存和命令参数。</li>
+      <li>新增 <code>server/workflows/final-video.js</code>，持久化成片任务使用 task runner。</li>
+      <li>参考帧生成仍保留在 <code>server/index.js</code>，因为它是同步预览请求而非后台任务。</li>
+      <li>运行测试并提交 <code>refactor: extract final video workflow</code>。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 4：验证</h2>
+    <ol>
+      <li>运行全部 Node 测试、生产构建和四个后端模块语法检查。</li>
+      <li>重启开发服务，检查任务 API 与项目页面。</li>
+      <li>检查 Git 工作区和提交历史。</li>
+    </ol>
+  </section>
+</body>
+</html>
