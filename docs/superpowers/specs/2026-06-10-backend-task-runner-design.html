@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>后端任务执行层第一阶段设计</title>
+  <style>
+    body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; line-height: 1.7; margin: 40px auto; max-width: 920px; padding: 0 24px; color: #1f2937; }
+    h1, h2 { color: #111827; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; }
+    pre { background: #111827; color: #f9fafb; padding: 16px; overflow: auto; border-radius: 6px; }
+    .note { border-left: 4px solid #2563eb; background: #eff6ff; padding: 12px 16px; }
+  </style>
+</head>
+<body>
+  <h1>后端任务执行层第一阶段设计</h1>
+  <p class="note">目标：在不改变现有 API 和工作流行为的前提下，从 <code>server/index.js</code> 提取可测试的任务执行公共层与任务路由。</p>
+
+  <h2>范围</h2>
+  <ul>
+    <li>新增 <code>server/task-runner.js</code>，统一处理进程启动、日志转发、取消、完成、失败和任务状态持久化。</li>
+    <li>新增 <code>server/routes/job-routes.js</code>，承载任务列表、任务详情和取消接口。</li>
+    <li>BS-RoFormer 作为第一个迁移样板，验证单进程工作流可以脱离 <code>server/index.js</code> 中的重复生命周期代码。</li>
+    <li>OCR、英文配音等多阶段流程本阶段不迁移，避免一次改动多个执行模型。</li>
+  </ul>
+
+  <h2>任务执行接口</h2>
+  <pre><code>const runner = createTaskRunner({ jobStore, taskRegistry });
+const task = await runner.start({
+  videoId,
+  workflow,
+  logPath,
+  activeTasks,
+  activeKey: videoId,
+  command,
+  arguments: args,
+  spawnOptions,
+});</code></pre>
+  <p><code>start()</code> 在返回前完成任务持久化、日志流创建、进程启动、活动任务登记和取消处理器注册。进程事件在后台更新同一个任务对象。</p>
+
+  <h2>状态与错误规则</h2>
+  <ul>
+    <li>启动成功后状态为 <code>running</code>。</li>
+    <li>退出码 0 写入 <code>completed</code>。</li>
+    <li>非零退出码或进程启动错误写入 <code>failed</code>，保留清晰错误文本。</li>
+    <li>取消时先标记 <code>cancelled</code>，再终止当前进程树，避免 close 事件覆盖取消状态。</li>
+    <li>所有终态都从活动任务表和任务注册表中移除，并只结束一次日志流。</li>
+  </ul>
+
+  <h2>任务路由接口</h2>
+  <p><code>createJobRouter({ findVideoById, jobController })</code> 返回 Express Router。路由负责项目存在性检查、HTTP 状态码和 JSON 响应；任务业务规则仍由 <code>jobController</code> 负责。</p>
+
+  <h2>测试策略</h2>
+  <ul>
+    <li>使用伪子进程和内存输出流测试任务执行器，不启动真实模型。</li>
+    <li>覆盖成功、非零退出、启动错误、取消四条生命周期路径。</li>
+    <li>使用临时 Express 服务和原生 <code>fetch</code> 测试任务路由的 200、202、404 与错误转发。</li>
+    <li>迁移 BS-RoFormer 后运行全部 Node 测试、生产构建和浏览器页面检查。</li>
+  </ul>
+
+  <h2>后续阶段</h2>
+  <p>本阶段稳定后，再让 task runner 支持多阶段命令序列，迁移 OCR、英文配音与单条重配；随后拆分其他 workflow routes 和 workflow services。</p>
+</body>
+</html>

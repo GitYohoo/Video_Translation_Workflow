@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>后端任务执行层第一阶段实施计划</title>
+  <style>
+    body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; line-height: 1.7; margin: 40px auto; max-width: 980px; padding: 0 24px; color: #1f2937; }
+    h1, h2 { color: #111827; }
+    section { border-top: 1px solid #d1d5db; padding-top: 18px; margin-top: 24px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; }
+    pre { background: #111827; color: #f9fafb; padding: 16px; overflow: auto; border-radius: 6px; }
+    .meta { background: #f8fafc; border-left: 4px solid #0f766e; padding: 12px 16px; }
+  </style>
+</head>
+<body>
+  <h1>后端任务执行层第一阶段实施计划</h1>
+  <div class="meta">
+    <p><strong>目标：</strong>提取可测试的单进程任务执行器和任务路由，并用 BS-RoFormer 验证迁移方式。</p>
+    <p><strong>架构：</strong>路由只处理 HTTP，控制器处理任务业务规则，task runner 处理进程生命周期。工作流仍负责输入校验、命令参数与状态响应。</p>
+    <p><strong>技术栈：</strong>Node.js ESM、Express 5、node:test、原生 fetch。</p>
+  </div>
+
+  <section>
+    <h2>任务 1：任务路由行为基线</h2>
+    <p><strong>文件：</strong>新增 <code>tests/job-routes.test.mjs</code>、新增 <code>server/routes/job-routes.js</code>、修改 <code>server/index.js</code>。</p>
+    <ol>
+      <li>先写测试：项目不存在返回 404；列表返回控制器结果；详情缺失返回 404；取消返回控制器结果。</li>
+      <li>运行 <code>node --test tests/job-routes.test.mjs</code>，确认因模块不存在而失败。</li>
+      <li>实现 <code>createJobRouter({ findVideoById, jobController })</code>，每个处理器使用统一的项目查找函数。</li>
+      <li>从 <code>server/index.js</code> 删除三条内联任务路由并挂载 Router。</li>
+      <li>运行单测和全部 Node 测试后提交 <code>refactor: extract job routes</code>。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 2：单进程 task runner</h2>
+    <p><strong>文件：</strong>新增 <code>tests/task-runner.test.mjs</code>、新增 <code>server/task-runner.js</code>。</p>
+    <ol>
+      <li>先写成功退出测试，期望任务持久化为 completed、清理注册表和活动任务。</li>
+      <li>运行测试确认 <code>createTaskRunner</code> 未定义。</li>
+      <li>实现依赖注入接口：</li>
+    </ol>
+    <pre><code>createTaskRunner({
+  jobStore,
+  taskRegistry,
+  spawnProcess,
+  createOutput,
+  terminateProcess,
+  now,
+})</code></pre>
+    <ol start="4">
+      <li>依次用失败测试增加非零退出、启动错误和取消行为。</li>
+      <li>每条测试先确认红灯，再添加最小实现并确认绿灯。</li>
+      <li>运行全部 Node 测试后提交 <code>feat: add single process task runner</code>。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 3：迁移 BS-RoFormer</h2>
+    <p><strong>文件：</strong>修改 <code>server/index.js</code>，必要时补充 <code>tests/task-runner.test.mjs</code>。</p>
+    <ol>
+      <li>让 BS-RoFormer 保留输入检查和命令参数组装，生命周期交给 task runner。</li>
+      <li>删除该流程中的手工日志流、spawn 事件、注册和终态写入代码。</li>
+      <li>验证运行中重复请求仍返回已有状态，退出错误文本保持为 <code>处理进程退出码：N</code>。</li>
+      <li>运行全部 Node 测试、<code>node --check server/index.js</code> 和 <code>npm run build</code>。</li>
+      <li>提交 <code>refactor: run bs roformer through task runner</code>。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 4：最终验证</h2>
+    <ol>
+      <li>启动开发服务，调用任务列表和任务详情 API。</li>
+      <li>在浏览器打开现有项目，确认工作流卡片、状态和错误区正常。</li>
+      <li>运行 <code>git diff --check</code> 和 <code>git status --short</code>，确保没有遗漏改动。</li>
+    </ol>
+  </section>
+</body>
+</html>
