@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>持久化任务系统完整迁移实施计划</title>
+  <style>
+    body { color: #1f2937; font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; line-height: 1.7; margin: 32px auto; max-width: 1020px; padding: 0 24px; }
+    h1, h2 { color: #111827; }
+    code, pre { background: #f3f4f6; border-radius: 4px; }
+    code { padding: 2px 5px; }
+    pre { overflow-x: auto; padding: 12px 16px; }
+    li { margin: 5px 0; }
+    .meta { background: #f0fdf4; border-left: 4px solid #16a34a; padding: 12px 16px; }
+  </style>
+</head>
+<body>
+  <h1>持久化任务系统完整迁移实施计划</h1>
+  <div class="meta">
+    <p><strong>目标：</strong>让全部后台工作流具备持久化状态、稳定 attempt、重启后可诊断、运行中可取消和失败后可重试。</p>
+    <p><strong>架构：</strong>Job Store 负责磁盘状态，Task Registry 负责当前进程内的取消句柄，工作流状态函数合并两者。现有运行接口继续承担重试，不增加重复执行入口。</p>
+    <p><strong>技术栈：</strong>Node.js、Express、React、Node Test Runner、Windows 子进程。</p>
+  </div>
+
+  <h2>任务 1：扩展 Job Store 状态机</h2>
+  <p><strong>文件：</strong><code>tests/job-store.test.mjs</code>、<code>server/job-store.js</code></p>
+  <ol>
+    <li>先写失败测试：任务支持 queued、running、cancelled，重复执行增加 attempt，并可按 videoId 列出任务。</li>
+    <li>运行 <code>node --test tests/job-store.test.mjs</code>，确认因为新 API 不存在而失败。</li>
+    <li>实现 <code>queueJob</code>、<code>markJobRunning</code>、<code>cancelJob</code>、<code>listJobs</code>，并让所有写入维护 <code>updatedAt</code>。</li>
+    <li>运行 Job Store 单测和全部 Node 单测。</li>
+    <li>提交 <code>feat: expand persistent job lifecycle</code>。</li>
+  </ol>
+
+  <h2>任务 2：建立可取消任务注册表</h2>
+  <p><strong>文件：</strong><code>tests/task-registry.test.mjs</code>、<code>server/task-registry.js</code></p>
+  <ol>
+    <li>先写失败测试：注册任务、读取任务、调用一次取消处理器、已结束任务不可取消。</li>
+    <li>运行目标测试确认失败。</li>
+    <li>实现 <code>createTaskRegistry()</code>，公开 <code>register/get/finish/cancel</code>。</li>
+    <li>运行目标测试和全部 Node 单测。</li>
+    <li>提交 <code>feat: add cancellable task registry</code>。</li>
+  </ol>
+
+  <h2>任务 3：统一重启恢复状态</h2>
+  <p><strong>文件：</strong><code>tests/workflow-job-state.test.mjs</code>、<code>server/workflow-job-state.js</code></p>
+  <ol>
+    <li>先写失败测试：queued 和 running 在没有内存任务时均解释为 interrupted failed；cancelled 保持 cancelled。</li>
+    <li>实现状态合并规则，并保留 attempt、stage、取消原因。</li>
+    <li>运行目标测试和全部 Node 单测。</li>
+    <li>提交 <code>feat: recover interrupted workflow jobs</code>。</li>
+  </ol>
+
+  <h2>任务 4：迁移剩余后台工作流</h2>
+  <p><strong>文件：</strong><code>server/index.js</code></p>
+  <ol>
+    <li>最终字幕、英文配音、单段重配、最终成片启动时写入 running job。</li>
+    <li>多阶段英文配音每次切换阶段时持久化 stage。</li>
+    <li>完成、失败、取消时分别写入 completed、failed、cancelled。</li>
+    <li>状态函数通过 <code>recoverWorkflowTask</code> 合并内存任务和持久化任务。</li>
+    <li>运行全部 Node 单测与生产构建。</li>
+    <li>提交 <code>feat: persist remaining workflow jobs</code>。</li>
+  </ol>
+
+  <h2>任务 5：统一任务 API 与前端取消入口</h2>
+  <p><strong>文件：</strong><code>server/index.js</code>、<code>src/main.jsx</code>、<code>src/styles.css</code></p>
+  <ol>
+    <li>增加项目任务列表、单任务查询和取消 API。</li>
+    <li>运行中的工作流卡片显示“取消任务”，调用统一取消 API。</li>
+    <li>取消成功后刷新对应工作流状态，显示“已取消，可重新执行”。</li>
+    <li>不新增独立重试 API；现有开始/重新生成按钮即重试入口。</li>
+    <li>运行全部 Node 单测、生产构建和浏览器关键状态检查。</li>
+    <li>提交 <code>feat: control workflow jobs from project UI</code>。</li>
+  </ol>
+
+  <h2>最终验收</h2>
+  <pre>npm run test:node
+npm run build
+python -m pytest tests/test_voxcpm_dubbing_workflow.py -q</pre>
+  <p>Python 测试必须使用 D 盘项目虚拟环境；若环境尚未建立，只报告阻塞，不向 C 盘系统 Python 安装依赖。</p>
+</body>
+</html>
