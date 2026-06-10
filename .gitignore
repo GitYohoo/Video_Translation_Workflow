@@ -5,6 +5,8 @@ scripts/__pycache__/
 data/uploads/
 data/thumbnails/
 data/logs/
+data/jobs/
 data/videos.json
 data/*.log
+.tmp/
 .dev-logs/

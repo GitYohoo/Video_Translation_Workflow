@@ -309,7 +309,7 @@ function WorkflowStageSection({ group, children }) {
   );
 }
 
-function Sidebar({ videos, isLoading, isSaving, onAddPath, onDelete }) {
+function Sidebar({ videos, isLoading, isAddingVideo, onAddPath, onDelete }) {
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -318,12 +318,12 @@ function Sidebar({ videos, isLoading, isSaving, onAddPath, onDelete }) {
       </div>
       <button
         className="upload-button"
-        disabled={isSaving}
+        disabled={isAddingVideo}
         type="button"
         onClick={onAddPath}
       >
         <span aria-hidden="true">+</span>
-        <strong>{isSaving ? "正在记录..." : "添加原视频"}</strong>
+        <strong>{isAddingVideo ? "正在添加..." : "添加原视频"}</strong>
       </button>
       <nav className="video-list" aria-label="视频项目">
         {isLoading && <p className="status-text">读取视频中...</p>}
@@ -357,7 +357,7 @@ function Sidebar({ videos, isLoading, isSaving, onAddPath, onDelete }) {
   );
 }
 
-function WelcomePage({ isSaving, onAddPath }) {
+function WelcomePage({ isAddingVideo, onAddPath }) {
   return (
     <main className="welcome-page">
       <section className="welcome-panel">
@@ -366,15 +366,24 @@ function WelcomePage({ isSaving, onAddPath }) {
         <p className="welcome-copy">
           选择本机原视频并记录路径，不复制视频文件。每个视频都会成为独立工作项目。
         </p>
-        <button className="primary-button" disabled={isSaving} type="button" onClick={onAddPath}>
-          <span>+</span> {isSaving ? "正在记录..." : "添加原视频路径"}
+        <button className="primary-button" disabled={isAddingVideo} type="button" onClick={onAddPath}>
+          <span>+</span> {isAddingVideo ? "正在添加..." : "选择原视频"}
         </button>
       </section>
     </main>
   );
 }
 
-function PathDialog({ isSaving, value, onChange, onClose, onSubmit }) {
+function PathDialog({
+  isSaving,
+  isSelectingSource,
+  value,
+  onChange,
+  onClose,
+  onSelectSource,
+  onSubmit,
+}) {
+  const isBusy = isSaving || isSelectingSource;
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
       <section
@@ -385,38 +394,49 @@ function PathDialog({ isSaving, value, onChange, onClose, onSubmit }) {
         onMouseDown={(event) => event.stopPropagation()}
       >
         <p className="eyebrow">添加视频项目</p>
-        <h2 id="path-dialog-title">记录原视频路径</h2>
+        <h2 id="path-dialog-title">选择原视频</h2>
         <p className="dialog-copy">
-          输入或粘贴原视频的完整路径。应用只登记该路径，不会复制视频文件。
+          点击按钮打开系统文件选择窗口。应用只登记原视频位置，不复制视频文件。
         </p>
-        <label className="path-label" htmlFor="source-path">
-          原视频绝对路径
-        </label>
-        <input
+        <button
           autoFocus
-          className="path-input"
-          id="source-path"
-          placeholder="D:\视频素材\示例视频.mp4"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              onSubmit();
-            }
-          }}
-        />
-        <p className="path-hint">可在资源管理器中按住 Shift 右键文件，选择“复制为路径”。</p>
+          className="primary-button file-picker-button"
+          disabled={isBusy}
+          type="button"
+          onClick={onSelectSource}
+        >
+          {isSelectingSource ? "等待选择..." : "选择视频文件"}
+        </button>
+        <details className="manual-path-fallback">
+          <summary>改为粘贴路径</summary>
+          <label className="path-label" htmlFor="source-path">
+            原视频绝对路径
+          </label>
+          <input
+            className="path-input"
+            id="source-path"
+            placeholder="D:\视频素材\示例视频.mp4"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                onSubmit();
+              }
+            }}
+          />
+          <p className="path-hint">备用方式：从资源管理器复制文件路径后粘贴到这里。</p>
+        </details>
         <div className="dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>
             取消
           </button>
           <button
             className="primary-button compact"
-            disabled={isSaving || !value.trim()}
+            disabled={isBusy || !value.trim()}
             type="button"
             onClick={onSubmit}
           >
-            {isSaving ? "正在记录..." : "建立项目"}
+            {isSaving ? "正在记录..." : "使用粘贴路径"}
           </button>
         </div>
       </section>
@@ -1146,9 +1166,13 @@ function VideoPage({ videos, isLoading }) {
               {(!separation || separation.status === "ready") && "等待开始"}
             </strong>
             <small>
-              {separation?.status === "running"
-                ? "音轨分离正在后台执行，页面会自动刷新状态。"
-                : "输出将写入原视频同级目录。"}
+              {separation?.status === "running" &&
+                "音轨分离正在后台执行，页面会自动刷新状态。"}
+              {separation?.status === "failed" &&
+                "上次处理失败，请查看下方错误信息后重新执行。"}
+              {separation?.status !== "running" &&
+                separation?.status !== "failed" &&
+                "输出将写入原视频同级目录。"}
             </small>
           </div>
           <DirectoryResult
@@ -1197,11 +1221,15 @@ function VideoPage({ videos, isLoading }) {
               {(!ocr || ocr.status === "ready") && "等待开始"}
             </strong>
             <small>
-              {ocr?.status === "running"
-                ? ocr.stage === "punctuation"
+              {ocr?.status === "running" &&
+                (ocr.stage === "punctuation"
                   ? "GPU OCR 已完成，正在执行 FunASR 标点恢复。"
-                  : "GPU OCR 正在读取画面字幕，页面会自动刷新状态。"
-                : "字幕结果将写入原视频同级目录。"}
+                  : "GPU OCR 正在读取画面字幕，页面会自动刷新状态。")}
+              {ocr?.status === "failed" &&
+                "上次处理失败，请查看下方错误信息后重新执行。"}
+              {ocr?.status !== "running" &&
+                ocr?.status !== "failed" &&
+                "字幕结果将写入原视频同级目录。"}
             </small>
           </div>
           <DirectoryResult
@@ -1857,6 +1885,7 @@ function App() {
   const [showPathDialog, setShowPathDialog] = useState(false);
   const [sourcePath, setSourcePath] = useState("");
   const [message, setMessage] = useState("");
+  const [isSelectingSource, setIsSelectingSource] = useState(false);
   const navigate = useNavigate();
 
   const loadVideos = useCallback(async () => {
@@ -1897,6 +1926,28 @@ function App() {
     }
   };
 
+  const handleSelectSource = async () => {
+    setIsSelectingSource(true);
+    setMessage("");
+    try {
+      const selected = await requestJson("/api/videos/select-source", {
+        method: "POST",
+      });
+      if (!selected) {
+        setMessage("已取消选择原视频。");
+        return;
+      }
+      await loadVideos();
+      setSourcePath("");
+      setShowPathDialog(false);
+      navigate(`/video/${selected.id}`);
+    } catch (error) {
+      setMessage(`选择原视频失败：${error.message}`);
+    } finally {
+      setIsSelectingSource(false);
+    }
+  };
+
   const handleDelete = async (id) => {
     try {
       await requestJson(`/api/videos/${id}`, { method: "DELETE" });
@@ -1912,20 +1963,22 @@ function App() {
       <Sidebar
         videos={videos}
         isLoading={isLoading}
-        isSaving={isSaving}
+        isAddingVideo={isSaving || isSelectingSource}
         onAddPath={() => setShowPathDialog(true)}
         onDelete={handleDelete}
       />
       {showPathDialog && (
         <PathDialog
           isSaving={isSaving}
+          isSelectingSource={isSelectingSource}
           value={sourcePath}
           onChange={setSourcePath}
           onClose={() => {
-            if (!isSaving) {
+            if (!isSaving && !isSelectingSource) {
               setShowPathDialog(false);
             }
           }}
+          onSelectSource={handleSelectSource}
           onSubmit={handleRegister}
         />
       )}
@@ -1935,7 +1988,7 @@ function App() {
           path="/"
           element={
             <WelcomePage
-              isSaving={isSaving}
+              isAddingVideo={isSaving || isSelectingSource}
               onAddPath={() => setShowPathDialog(true)}
             />
           }

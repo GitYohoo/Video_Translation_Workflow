@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { createCatalogStore } from "./catalog-store.js";
+import { selectVideoPath } from "./file-dialog.js";
 import { createJobStore, jobIdFor } from "./job-store.js";
 import {
   createProjectPathResolver,
@@ -2268,6 +2269,20 @@ app.post("/api/videos/register", async (request, response, next) => {
       return;
     }
     const [record] = await addReferencePaths([request.body.sourcePath]);
+    response.status(201).json(record);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/select-source", async (_request, response, next) => {
+  try {
+    const sourcePath = await selectVideoPath();
+    if (!sourcePath) {
+      response.status(204).end();
+      return;
+    }
+    const [record] = await addReferencePaths([sourcePath]);
     response.status(201).json(record);
   } catch (error) {
     next(error);

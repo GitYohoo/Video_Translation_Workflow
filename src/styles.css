@@ -359,6 +359,34 @@ button {
   margin: 10px 0 25px;
 }
 
+.file-picker-button {
+  justify-content: center;
+  margin-bottom: 18px;
+  width: 100%;
+}
+
+.manual-path-fallback {
+  border: 1px solid #e5ebf3;
+  border-radius: 12px;
+  margin-bottom: 22px;
+  padding: 13px 14px;
+}
+
+.manual-path-fallback summary {
+  color: #40506a;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.manual-path-fallback[open] summary {
+  margin-bottom: 13px;
+}
+
+.manual-path-fallback .path-hint {
+  margin-bottom: 0;
+}
+
 .dialog-actions {
   display: flex;
   gap: 11px;
