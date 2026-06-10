@@ -69,3 +69,49 @@ test("persists failed job state with error text", async () => {
   assert.equal(failed.error, "OCR 退出码：1");
   assert.ok(failed.finishedAt);
 });
+
+test("queues and starts a job with an incrementing attempt", async () => {
+  const { store } = await temporaryJobStore();
+
+  const queued = await store.queueJob({ videoId: "video-4", workflow: "final-video" });
+  assert.equal(queued.status, "queued");
+  assert.equal(queued.attempt, 1);
+  assert.ok(queued.queuedAt);
+  assert.equal(queued.startedAt, null);
+
+  const running = await store.markJobRunning(queued.id, { stage: "rendering" });
+  assert.equal(running.status, "running");
+  assert.equal(running.stage, "rendering");
+  assert.ok(running.startedAt);
+
+  await store.failJob(running.id, "render failed");
+  const retried = await store.queueJob({ videoId: "video-4", workflow: "final-video" });
+  assert.equal(retried.status, "queued");
+  assert.equal(retried.attempt, 2);
+  assert.equal(retried.error, null);
+  assert.equal(retried.finishedAt, null);
+});
+
+test("persists cancelled jobs without treating cancellation as an error", async () => {
+  const { store } = await temporaryJobStore();
+  const running = await store.startJob({ videoId: "video-5", workflow: "english-dubbing" });
+
+  const cancelled = await store.cancelJob(running.id, "用户取消");
+
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.error, null);
+  assert.equal(cancelled.cancellationReason, "用户取消");
+  assert.ok(cancelled.finishedAt);
+});
+
+test("lists jobs for one project ordered by most recent update", async () => {
+  const { store } = await temporaryJobStore();
+  const first = await store.startJob({ videoId: "video-6", workflow: "ocr" });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const second = await store.startJob({ videoId: "video-6", workflow: "final-video" });
+  await store.startJob({ videoId: "other-video", workflow: "ocr" });
+
+  const jobs = await store.listJobs({ videoId: "video-6" });
+
+  assert.deepEqual(jobs.map((job) => job.id), [second.id, first.id]);
+});
