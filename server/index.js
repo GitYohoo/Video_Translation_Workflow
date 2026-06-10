@@ -21,6 +21,7 @@ import { createTaskRegistry } from "./task-registry.js";
 import { createTaskRunner } from "./task-runner.js";
 import { activeTaskFromJob, recoverWorkflowTask } from "./workflow-job-state.js";
 import { createBsRoformerWorkflow } from "./workflows/bs-roformer.js";
+import { createWhisperxWorkflow } from "./workflows/whisperx.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectDirectory = path.resolve(serverDirectory, "..");
@@ -198,6 +199,37 @@ const bsRoformerWorkflow = createBsRoformerWorkflow({
       TMP: bsRoformerTempDirectory,
       PYTHONUTF8: "1",
       PYTHONIOENCODING: "utf-8",
+    },
+  },
+});
+const whisperxWorkflow = createWhisperxWorkflow({
+  activeTasks: activeWhisperxTasks,
+  outputPaths: whisperxOutputPaths,
+  getStatus: whisperxStatus,
+  isFile,
+  ensureDirectory: (directory) => fs.mkdir(directory, { recursive: true }),
+  taskRunner,
+  configuration: {
+    pythonPath: whisperxPython,
+    coreScript: whisperxCoreScript,
+    tokenPath: whisperxTokenPath,
+    ffmpegPath: path.join(ffmpegDirectory, "ffmpeg.exe"),
+    runtimeDirectory: bsRoformerRuntimeDirectory,
+    temporaryDirectory: bsRoformerTempDirectory,
+    modelDirectory: whisperxModelDirectory,
+    logDirectory,
+    workingDirectory: workflowRootDirectory,
+    environment: {
+      ...process.env,
+      HF_HOME: "D:\\models\\huggingface",
+      HUGGINGFACE_HUB_CACHE: "D:\\models\\huggingface\\hub",
+      PIP_CACHE_DIR: "D:\\models\\pip-cache",
+      TORCH_HOME: "D:\\models\\torch",
+      TEMP: bsRoformerTempDirectory,
+      TMP: bsRoformerTempDirectory,
+      PYTHONUTF8: "1",
+      PYTHONIOENCODING: "utf-8",
+      PATH: `${torchLibraryDirectory};${ffmpegDirectory};${process.env.PATH || ""}`,
     },
   },
 });
@@ -1187,115 +1219,7 @@ async function whisperxStatus(record) {
 }
 
 async function startWhisperx(record) {
-  const paths = whisperxOutputPaths(record);
-  if (!paths) {
-    throw new Error("该项目没有原视频路径，无法执行 WhisperX。");
-  }
-  if (!(await isFile(paths.inputPath))) {
-    throw new Error("未生成 DX 对白轨，请先完成 BS-RoFormer 二轨分离。");
-  }
-  if (activeWhisperxTasks.get(record.id)?.status === "running") {
-    return whisperxStatus(record);
-  }
-  for (const [label, filePath] of [
-    ["WhisperX 脚本", whisperxCoreScript],
-    ["WhisperX Python 环境", whisperxPython],
-    ["Hugging Face 访问令牌", whisperxTokenPath],
-    ["FFmpeg 程序", path.join(ffmpegDirectory, "ffmpeg.exe")],
-  ]) {
-    if (!(await isFile(filePath))) {
-      throw new Error(`找不到${label}：${filePath}`);
-    }
-  }
-
-  await fs.mkdir(bsRoformerTempDirectory, { recursive: true });
-  await fs.mkdir(whisperxModelDirectory, { recursive: true });
-  const logPath = path.join(logDirectory, `${record.id}_WhisperX_说话人字幕.log`);
-  const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
-  const job = await jobStore.startJob({
-    videoId: record.id,
-    workflow: WHISPERX_SPEAKERS_WORKFLOW,
-    logPath,
-  });
-  const task = activeTaskFromJob(job);
-  activeWhisperxTasks.set(record.id, task);
-
-  async function fail(message) {
-    if (["failed", "cancelled"].includes(task.status)) {
-      return;
-    }
-    task.status = "failed";
-    task.error = message;
-    task.finishedAt = new Date().toISOString();
-    try {
-      await jobStore.failJob(task.id, message);
-    } catch (error) {
-      output.write(`\n写入任务状态失败：${error.message}\n`);
-    } finally {
-      finishRegisteredTask(task);
-      output.end(`\n任务状态：failed\n${message}\n`);
-    }
-  }
-
-  const child = spawn(
-    whisperxPython,
-    [
-      whisperxCoreScript,
-      "--audio",
-      paths.inputPath,
-      "--runtime-dir",
-      bsRoformerRuntimeDirectory,
-      "--token-file",
-      whisperxTokenPath,
-      "--model",
-      "large-v3",
-      "--batch-size",
-      "4",
-    ],
-    {
-      cwd: workflowRootDirectory,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        HF_HOME: "D:\\models\\huggingface",
-        HUGGINGFACE_HUB_CACHE: "D:\\models\\huggingface\\hub",
-        PIP_CACHE_DIR: "D:\\models\\pip-cache",
-        TORCH_HOME: "D:\\models\\torch",
-        TEMP: bsRoformerTempDirectory,
-        TMP: bsRoformerTempDirectory,
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-        PATH: `${torchLibraryDirectory};${ffmpegDirectory};${process.env.PATH || ""}`,
-      },
-    },
-  );
-  registerCancelableTask({ task, childProcess: () => child, output });
-  child.stdout.pipe(output, { end: false });
-  child.stderr.pipe(output, { end: false });
-  child.on("error", (error) => {
-    void fail(`WhisperX 启动失败：${error.message}`);
-  });
-  child.on("close", async (code) => {
-    if (["failed", "cancelled"].includes(task.status)) {
-      return;
-    }
-    if (code !== 0) {
-      void fail(`WhisperX 处理退出码：${code}`);
-      return;
-    }
-    task.status = "completed";
-    task.error = null;
-    task.finishedAt = new Date().toISOString();
-    try {
-      await jobStore.finishJob(task.id, "completed");
-    } catch (error) {
-      output.write(`\n写入任务状态失败：${error.message}\n`);
-    } finally {
-      finishRegisteredTask(task);
-      output.end(`\n任务状态：${task.status}\n`);
-    }
-  });
-  return whisperxStatus(record);
+  return whisperxWorkflow.start(record);
 }
 
 async function finalSubtitlesStatus(record) {
