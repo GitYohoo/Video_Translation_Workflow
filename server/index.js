@@ -152,6 +152,9 @@ const activeEnglishDubbingTasks = new Map();
 const activeFinalVideoTasks = new Map();
 const OCR_SUBTITLES_WORKFLOW = "ocr-subtitles";
 const WHISPERX_SPEAKERS_WORKFLOW = "whisperx-speakers";
+const FINAL_SUBTITLES_WORKFLOW = "final-subtitles";
+const ENGLISH_DUBBING_WORKFLOW = "english-dubbing-mix";
+const FINAL_VIDEO_WORKFLOW = "final-video";
 const finalVideoStyles = new Map();
 const catalogStore = createCatalogStore(catalogPath);
 const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
@@ -1323,7 +1326,9 @@ async function finalSubtitlesStatus(record) {
       error: "该项目没有可执行的原视频路径。",
     };
   }
-  const task = activeFinalSubtitlesTasks.get(record.id);
+  const activeTask = activeFinalSubtitlesTasks.get(record.id);
+  const persistedJob = await jobStore.readJob(jobIdFor(record.id, FINAL_SUBTITLES_WORKFLOW));
+  const task = recoverWorkflowTask(activeTask, persistedJob);
   const inputEntries = await Promise.all(
     Object.entries(paths.inputs).map(async ([key, inputPath]) => [
       key,
@@ -1338,6 +1343,8 @@ async function finalSubtitlesStatus(record) {
     status = "running";
   } else if (task?.status === "failed") {
     status = "failed";
+  } else if (task?.status === "cancelled") {
+    status = "cancelled";
   } else if (srtReady) {
     status = "completed";
   }
@@ -1396,6 +1403,11 @@ async function startFinalSubtitles(record) {
 
   const logPath = path.join(logDirectory, `${record.id}_最终中文字幕.log`);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
+  const job = await jobStore.startJob({
+    videoId: record.id,
+    workflow: FINAL_SUBTITLES_WORKFLOW,
+    logPath,
+  });
   const child = spawn(
     finalSubtitlesPython,
     [
@@ -1419,27 +1431,36 @@ async function startFinalSubtitles(record) {
       },
     },
   );
-  const task = {
-    status: "running",
-    startedAt: new Date().toISOString(),
-    finishedAt: null,
-    logPath,
-    error: null,
-  };
+  const task = activeTaskFromJob(job);
   activeFinalSubtitlesTasks.set(record.id, task);
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
-  child.on("error", (error) => {
+  child.on("error", async (error) => {
     task.status = "failed";
     task.error = `中文字幕合并启动失败：${error.message}`;
     task.finishedAt = new Date().toISOString();
-    output.end(`\n任务状态：failed\n${task.error}\n`);
+    try {
+      await jobStore.failJob(task.id, task.error);
+    } catch (jobError) {
+      output.write(`\n写入任务状态失败：${jobError.message}\n`);
+    } finally {
+      output.end(`\n任务状态：failed\n${task.error}\n`);
+    }
   });
-  child.on("close", (code) => {
+  child.on("close", async (code) => {
     if (task.status !== "failed") {
       task.status = code === 0 ? "completed" : "failed";
       task.error = code === 0 ? null : `中文字幕合并退出码：${code}`;
       task.finishedAt = new Date().toISOString();
+      try {
+        if (code === 0) {
+          await jobStore.finishJob(task.id, "completed");
+        } else {
+          await jobStore.failJob(task.id, task.error);
+        }
+      } catch (jobError) {
+        output.write(`\n写入任务状态失败：${jobError.message}\n`);
+      }
     }
     output.end(`\n任务状态：${task.status}\n`);
   });
@@ -1455,7 +1476,9 @@ async function englishDubbingStatus(record) {
       error: "该项目没有可执行的原视频路径。",
     };
   }
-  const task = activeEnglishDubbingTasks.get(record.id);
+  const activeTask = activeEnglishDubbingTasks.get(record.id);
+  const persistedJob = await jobStore.readJob(jobIdFor(record.id, ENGLISH_DUBBING_WORKFLOW));
+  const task = recoverWorkflowTask(activeTask, persistedJob);
   const inputEntries = await Promise.all(
     Object.entries(paths.inputs).map(async ([key, inputPath]) => [
       key,
@@ -1515,6 +1538,8 @@ async function englishDubbingStatus(record) {
     status = "running";
   } else if (task?.status === "failed") {
     status = "failed";
+  } else if (task?.status === "cancelled") {
+    status = "cancelled";
   } else if (mixedTrackReady && dialogueTrackReady && !mixOutdated) {
     status = "completed";
   }
@@ -1599,15 +1624,23 @@ async function startEnglishDubbing(record) {
   await fs.mkdir(voxCpmTempDirectory, { recursive: true });
   const logPath = path.join(logDirectory, `${record.id}_VoxCPM_英文配音混音.log`);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
-  const task = {
-    status: "running",
-    stage: "preflight",
-    startedAt: new Date().toISOString(),
-    finishedAt: null,
+  const job = await jobStore.startJob({
+    videoId: record.id,
+    workflow: ENGLISH_DUBBING_WORKFLOW,
     logPath,
-    error: null,
-  };
+    stage: "preflight",
+  });
+  const task = activeTaskFromJob(job);
   activeEnglishDubbingTasks.set(record.id, task);
+
+  async function updateStage(stage) {
+    task.stage = stage;
+    try {
+      await jobStore.updateJob(task.id, { stage });
+    } catch (error) {
+      output.write(`\n写入任务阶段失败：${error.message}\n`);
+    }
+  }
 
   const commonEnvironment = {
     ...process.env,
@@ -1673,7 +1706,7 @@ async function startEnglishDubbing(record) {
         commonEnvironment,
       );
       const subtitleStats = await fs.stat(paths.inputs.englishSrt);
-      task.stage = "dubbing-groups";
+      await updateStage("dubbing-groups");
       output.write("\n步骤 2/5：生成 Gemini 整句配音分段规划。\n");
       const groupArguments = [
         planEnglishDubbingGroupsScript,
@@ -1706,7 +1739,7 @@ async function startEnglishDubbing(record) {
         dubbingGroupsStats.mtimeMs > segmentManifestStats.mtimeMs ||
         dialogueChanged ||
         sourceAudioChanged;
-      task.stage = "segments";
+      await updateStage("segments");
       output.write("\n步骤 3/5：按整句分段切割 DX 对白轨。\n");
       if (regenerateSegments) {
         const segmentArguments = [
@@ -1730,7 +1763,7 @@ async function startEnglishDubbing(record) {
         output.write(`英文字幕未变更，复用分段清单：${paths.segmentManifestPath}\n`);
       }
 
-      task.stage = "dubbing";
+      await updateStage("dubbing");
       const dubbingArguments = [
         voxCpmCoreScript,
         "--manifest",
@@ -1758,7 +1791,7 @@ async function startEnglishDubbing(record) {
         ttsEnvironment,
       );
 
-      task.stage = "mixing";
+      await updateStage("mixing");
       output.write("\n步骤 5/5：铺设英文对白整轨并与 MX+FX 背景底轨混音。\n");
       await runProcess(
         punctuationPython,
@@ -1781,12 +1814,24 @@ async function startEnglishDubbing(record) {
       task.status = "completed";
       task.stage = "completed";
       task.finishedAt = new Date().toISOString();
-      output.end("\n任务状态：completed\n");
+      try {
+        await jobStore.finishJob(task.id, "completed", { stage: "completed" });
+      } catch (error) {
+        output.write(`\n写入任务状态失败：${error.message}\n`);
+      } finally {
+        output.end("\n任务状态：completed\n");
+      }
     } catch (error) {
       task.status = "failed";
       task.error = `英文配音混音失败：${error.message}`;
       task.finishedAt = new Date().toISOString();
-      output.end(`\n任务状态：failed\n${task.error}\n`);
+      try {
+        await jobStore.failJob(task.id, task.error, { stage: task.stage });
+      } catch (jobError) {
+        output.write(`\n写入任务状态失败：${jobError.message}\n`);
+      } finally {
+        output.end(`\n任务状态：failed\n${task.error}\n`);
+      }
     }
   })();
   return englishDubbingStatus(record);
@@ -1831,13 +1876,15 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
     `${record.id}_VoxCPM_单条重新配音_${paddedSegmentNumber}.log`,
   );
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
-  const task = {
-    status: "running",
-    stage: "redubbing",
-    startedAt: new Date().toISOString(),
-    finishedAt: null,
+  const job = await jobStore.startJob({
+    videoId: record.id,
+    workflow: ENGLISH_DUBBING_WORKFLOW,
     logPath,
-    error: null,
+    stage: "redubbing",
+  });
+  const persistedJob = await jobStore.updateJob(job.id, { redubSegmentNumber: segmentNumber });
+  const task = {
+    ...activeTaskFromJob(persistedJob),
     redubSegmentNumber: segmentNumber,
   };
   activeEnglishDubbingTasks.set(record.id, task);
@@ -1918,6 +1965,11 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
       );
 
       task.stage = "mixing";
+      try {
+        await jobStore.updateJob(task.id, { stage: "mixing" });
+      } catch (error) {
+        output.write(`\n写入任务阶段失败：${error.message}\n`);
+      }
       output.write(`\n步骤 2/2：用第 ${paddedSegmentNumber} 段新配音重新合成英文混音。\n`);
       await runProcess(
         punctuationPython,
@@ -1940,12 +1992,24 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
       task.status = "completed";
       task.stage = "completed";
       task.finishedAt = new Date().toISOString();
-      output.end("\n任务状态：completed\n");
+      try {
+        await jobStore.finishJob(task.id, "completed", { stage: "completed" });
+      } catch (error) {
+        output.write(`\n写入任务状态失败：${error.message}\n`);
+      } finally {
+        output.end("\n任务状态：completed\n");
+      }
     } catch (error) {
       task.status = "failed";
       task.error = `第 ${paddedSegmentNumber} 段重新配音失败：${error.message}`;
       task.finishedAt = new Date().toISOString();
-      output.end(`\n任务状态：failed\n${task.error}\n`);
+      try {
+        await jobStore.failJob(task.id, task.error, { stage: task.stage });
+      } catch (jobError) {
+        output.write(`\n写入任务状态失败：${jobError.message}\n`);
+      } finally {
+        output.end(`\n任务状态：failed\n${task.error}\n`);
+      }
     }
   })();
   return englishDubbingStatus(record);
@@ -2003,7 +2067,9 @@ async function finalVideoStatus(record) {
       error: "该项目没有可执行的原视频路径。",
     };
   }
-  const task = activeFinalVideoTasks.get(record.id);
+  const activeTask = activeFinalVideoTasks.get(record.id);
+  const persistedJob = await jobStore.readJob(jobIdFor(record.id, FINAL_VIDEO_WORKFLOW));
+  const task = recoverWorkflowTask(activeTask, persistedJob);
   const inputEntries = await Promise.all(
     Object.entries(paths.inputs).map(async ([key, inputPath]) => [
       key,
@@ -2041,6 +2107,8 @@ async function finalVideoStatus(record) {
     status = "running";
   } else if (task?.status === "failed") {
     status = "failed";
+  } else if (task?.status === "cancelled") {
+    status = "cancelled";
   } else if (videoReady && reportReady && canRun && !videoOutdated) {
     status = "completed";
   }
@@ -2152,6 +2220,11 @@ async function startFinalVideo(record, requestedStyle) {
   await fs.mkdir(paths.outputDirectory, { recursive: true });
   const logPath = path.join(logDirectory, `${record.id}_最终英文成片.log`);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
+  const job = await jobStore.startJob({
+    videoId: record.id,
+    workflow: FINAL_VIDEO_WORKFLOW,
+    logPath,
+  });
   const child = spawn(
     punctuationPython,
     finalVideoArguments(paths, style),
@@ -2161,27 +2234,36 @@ async function startFinalVideo(record, requestedStyle) {
       env: finalVideoEnvironment(),
     },
   );
-  const task = {
-    status: "running",
-    startedAt: new Date().toISOString(),
-    finishedAt: null,
-    logPath,
-    error: null,
-  };
+  const task = activeTaskFromJob(job);
   activeFinalVideoTasks.set(record.id, task);
   child.stdout.pipe(output, { end: false });
   child.stderr.pipe(output, { end: false });
-  child.on("error", (error) => {
+  child.on("error", async (error) => {
     task.status = "failed";
     task.error = `最终成片启动失败：${error.message}`;
     task.finishedAt = new Date().toISOString();
-    output.end(`\n任务状态：failed\n${task.error}\n`);
+    try {
+      await jobStore.failJob(task.id, task.error);
+    } catch (jobError) {
+      output.write(`\n写入任务状态失败：${jobError.message}\n`);
+    } finally {
+      output.end(`\n任务状态：failed\n${task.error}\n`);
+    }
   });
-  child.on("close", (code) => {
+  child.on("close", async (code) => {
     if (task.status !== "failed") {
       task.status = code === 0 ? "completed" : "failed";
       task.error = code === 0 ? null : `最终成片退出码：${code}`;
       task.finishedAt = new Date().toISOString();
+      try {
+        if (code === 0) {
+          await jobStore.finishJob(task.id, "completed");
+        } else {
+          await jobStore.failJob(task.id, task.error);
+        }
+      } catch (jobError) {
+        output.write(`\n写入任务状态失败：${jobError.message}\n`);
+      }
     }
     output.end(`\n任务状态：${task.status}\n`);
   });
