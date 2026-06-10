@@ -22,6 +22,7 @@ import { createTaskRunner } from "./task-runner.js";
 import { activeTaskFromJob, recoverWorkflowTask } from "./workflow-job-state.js";
 import { createBsRoformerWorkflow } from "./workflows/bs-roformer.js";
 import { createFinalSubtitlesWorkflow } from "./workflows/final-subtitles.js";
+import { createFinalVideoWorkflow } from "./workflows/final-video.js";
 import { createWhisperxWorkflow } from "./workflows/whisperx.js";
 
 const serverDirectory = path.dirname(fileURLToPath(import.meta.url));
@@ -250,6 +251,26 @@ const finalSubtitlesWorkflow = createFinalSubtitlesWorkflow({
       PYTHONUTF8: "1",
       PYTHONIOENCODING: "utf-8",
     },
+  },
+});
+const finalVideoWorkflow = createFinalVideoWorkflow({
+  activeTasks: activeFinalVideoTasks,
+  outputPaths: finalVideoOutputPaths,
+  getDubbingStatus: englishDubbingStatus,
+  getStatus: finalVideoStatus,
+  isFile,
+  ensureDirectory: (directory) => fs.mkdir(directory, { recursive: true }),
+  normalizeStyle: finalVideoStyle,
+  saveStyle: (videoId, style) => finalVideoStyles.set(videoId, style),
+  buildArguments: (paths, style) => finalVideoArguments(paths, style),
+  taskRunner,
+  configuration: {
+    pythonPath: punctuationPython,
+    coreScript: renderEnglishVideoScript,
+    ffmpegPath: path.join(ffmpegDirectory, "ffmpeg.exe"),
+    logDirectory,
+    workingDirectory: workflowRootDirectory,
+    environment: finalVideoEnvironment(),
   },
 });
 
@@ -2050,95 +2071,7 @@ async function generateFinalVideoPreview(record, requestedStyle) {
 }
 
 async function startFinalVideo(record, requestedStyle) {
-  const paths = finalVideoOutputPaths(record);
-  if (!paths) {
-    throw new Error("该项目没有原视频路径，无法生成最终成片。");
-  }
-  const dubbingStatus = await englishDubbingStatus(record);
-  if (dubbingStatus.status !== "completed") {
-    throw new Error("英文译稿、主时间轴或音轨已变化，请先重新执行英文配音与混音。");
-  }
-  const missingInputs = [];
-  for (const inputPath of Object.values(paths.inputs)) {
-    if (!(await isFile(inputPath))) {
-      missingInputs.push(inputPath);
-    }
-  }
-  if (missingInputs.length > 0) {
-    throw new Error(`最终成片所需输入尚未齐全：${missingInputs.join("；")}`);
-  }
-  if (activeFinalVideoTasks.get(record.id)?.status === "running") {
-    return finalVideoStatus(record);
-  }
-  for (const [label, filePath] of [
-    ["视频成片脚本", renderEnglishVideoScript],
-    ["Python 环境", punctuationPython],
-    ["FFmpeg 程序", path.join(ffmpegDirectory, "ffmpeg.exe")],
-  ]) {
-    if (!(await isFile(filePath))) {
-      throw new Error(`找不到${label}：${filePath}`);
-    }
-  }
-  const style = finalVideoStyle(requestedStyle);
-  finalVideoStyles.set(record.id, style);
-  await fs.mkdir(paths.outputDirectory, { recursive: true });
-  const logPath = path.join(logDirectory, `${record.id}_最终英文成片.log`);
-  const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
-  const job = await jobStore.startJob({
-    videoId: record.id,
-    workflow: FINAL_VIDEO_WORKFLOW,
-    logPath,
-  });
-  const child = spawn(
-    punctuationPython,
-    finalVideoArguments(paths, style),
-    {
-      cwd: workflowRootDirectory,
-      windowsHide: true,
-      env: finalVideoEnvironment(),
-    },
-  );
-  const task = activeTaskFromJob(job);
-  activeFinalVideoTasks.set(record.id, task);
-  registerCancelableTask({ task, childProcess: () => child, output });
-  child.stdout.pipe(output, { end: false });
-  child.stderr.pipe(output, { end: false });
-  child.on("error", async (error) => {
-    if (task.status === "cancelled") {
-      return;
-    }
-    task.status = "failed";
-    task.error = `最终成片启动失败：${error.message}`;
-    task.finishedAt = new Date().toISOString();
-    try {
-      await jobStore.failJob(task.id, task.error);
-    } catch (jobError) {
-      output.write(`\n写入任务状态失败：${jobError.message}\n`);
-    } finally {
-      finishRegisteredTask(task);
-      output.end(`\n任务状态：failed\n${task.error}\n`);
-    }
-  });
-  child.on("close", async (code) => {
-    if (["cancelled", "failed"].includes(task.status)) {
-      return;
-    }
-    task.status = code === 0 ? "completed" : "failed";
-    task.error = code === 0 ? null : `最终成片退出码：${code}`;
-    task.finishedAt = new Date().toISOString();
-    try {
-      if (code === 0) {
-        await jobStore.finishJob(task.id, "completed");
-      } else {
-        await jobStore.failJob(task.id, task.error);
-      }
-    } catch (jobError) {
-      output.write(`\n写入任务状态失败：${jobError.message}\n`);
-    }
-    finishRegisteredTask(task);
-    output.end(`\n任务状态：${task.status}\n`);
-  });
-  return finalVideoStatus(record);
+  return finalVideoWorkflow.start(record, requestedStyle);
 }
 
 async function buildReferenceRecord(sourcePath) {
