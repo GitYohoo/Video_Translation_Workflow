@@ -14,6 +14,7 @@ import {
   createProjectPathResolver,
   projectWorkspaceDirectory,
 } from "./project-paths.js";
+import { createJobRouter } from "./routes/job-routes.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
 import { applySelectedSourceToRecord } from "./source-record.js";
 import { createTaskRegistry } from "./task-registry.js";
@@ -2449,46 +2450,7 @@ app.get("/api/videos/:id", async (request, response, next) => {
   }
 });
 
-app.get("/api/videos/:id/jobs", async (request, response, next) => {
-  try {
-    const video = await requestVideo(request, response);
-    if (!video) {
-      return;
-    }
-    response.json(await jobController.list(video.id));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/jobs/:workflow", async (request, response, next) => {
-  try {
-    const video = await requestVideo(request, response);
-    if (!video) {
-      return;
-    }
-    const job = await jobController.get(video.id, request.params.workflow);
-    if (!job) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(job);
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/videos/:id/jobs/:workflow/cancel", async (request, response, next) => {
-  try {
-    const video = await requestVideo(request, response);
-    if (!video) {
-      return;
-    }
-    response.json(await jobController.cancel(video.id, request.params.workflow));
-  } catch (error) {
-    next(error);
-  }
-});
+app.use(createJobRouter({ findVideoById, jobController }));
 
 app.post("/api/videos/:id/open-path", async (request, response, next) => {
   try {
