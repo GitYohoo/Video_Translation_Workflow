@@ -17,6 +17,7 @@ import {
 } from "./project-paths.js";
 import { createJobRouter } from "./routes/job-routes.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
+import { listenForRequests } from "./server-listener.js";
 import { applySelectedSourceToRecord } from "./source-record.js";
 import { createTaskRegistry } from "./task-registry.js";
 import { createTaskRunner } from "./task-runner.js";
@@ -122,7 +123,6 @@ const {
   artifactPathForKey,
   knownProjectPaths,
 } = projectPathResolver;
-const port = Number(process.env.PORT || 3001);
 const nonSpeechFallbackPatterns = [
   { pattern: /哈{2,}|呵{2,}|笑声|大笑|冷笑|嗤笑|偷笑|笑|laughs?|laughter|chuckles?|giggles?/i, text: "[laughs]" },
   { pattern: /哭声|哭泣|抽泣|啜泣|呜咽|crying|sobbing/i, text: "[crying]" },
@@ -2621,7 +2621,17 @@ app.use((error, _request, response, _next) => {
   response.status(400).json({ error: error.message || "请求处理失败。" });
 });
 
-app.listen(port, "127.0.0.1", () => {
-  console.log(`视频翻译工作流服务已启动：http://127.0.0.1:${port}`);
+export async function startServer({
+  port = Number(process.env.PORT || 3001),
+  host = "127.0.0.1",
+} = {}) {
+  const listener = await listenForRequests(app, { port, host });
+  console.log(`视频翻译工作流服务已启动：${listener.url}`);
   console.log("新项目仅记录原视频路径，不复制视频文件。");
-});
+  return listener;
+}
+
+const entryScript = process.argv[1] ? path.resolve(process.argv[1]) : null;
+if (entryScript === fileURLToPath(import.meta.url)) {
+  await startServer();
+}
