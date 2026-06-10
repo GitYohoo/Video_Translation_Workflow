@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>影译工坊桌面应用实施计划</title>
+  <style>
+    body { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; line-height: 1.75; margin: 40px auto; max-width: 980px; padding: 0 24px; color: #1f2937; }
+    h1, h2 { color: #111827; }
+    section { border-top: 1px solid #d1d5db; margin-top: 26px; padding-top: 18px; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>影译工坊桌面应用实施计划</h1>
+  <p><strong>目标：</strong>完成可安装、可便携运行、自动管理后端服务的 Windows 桌面应用，并升级工作台视觉。</p>
+
+  <section>
+    <h2>任务 1：可配置应用路径</h2>
+    <ol>
+      <li>先写 <code>tests/application-paths.test.mjs</code>，验证开发默认目录和桌面环境变量覆盖。</li>
+      <li>实现 <code>server/application-paths.js</code> 并接入 <code>server/index.js</code>。</li>
+      <li>运行完整测试并提交。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 2：可嵌入的服务启动器</h2>
+    <ol>
+      <li>先写 <code>tests/server-listener.test.mjs</code>，验证随机端口、URL 和关闭行为。</li>
+      <li>实现 <code>server/server-listener.js</code>，让 <code>server/index.js</code> 导出 <code>startServer()</code>。</li>
+      <li>确认原有 <code>npm start</code> 仍可使用并提交。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 3：Electron 桌面壳</h2>
+    <ol>
+      <li>安装 Electron、electron-builder 与 lucide-react 到 D 盘项目目录。</li>
+      <li>新增桌面设置测试与 <code>electron/desktop-settings.js</code>。</li>
+      <li>新增 <code>electron/main.js</code>、<code>preload.js</code> 和加载页。</li>
+      <li>实现单实例、随机端口服务、原生目录选择、设置 IPC、外链限制和退出清理。</li>
+      <li>提交桌面壳。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 4：桌面工作台视觉</h2>
+    <ol>
+      <li>新增桌面标题栏、设置弹窗和图标按钮。</li>
+      <li>调整侧栏、阶段导航、工作流卡片、空状态、按钮和状态色。</li>
+      <li>使用 Browser 在桌面与最小窗口尺寸检查 DOM、截图和控制台。</li>
+      <li>提交界面升级。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>任务 5：安装包与迁移</h2>
+    <ol>
+      <li>生成应用图标，添加 electron-builder 配置。</li>
+      <li>把当前项目目录与任务元数据迁移到 <code>D:\VideoTranslationWorkflow\data</code>，保留原数据。</li>
+      <li>生成 NSIS 安装包、Portable 版和 unpacked 目录。</li>
+      <li>启动 unpacked 应用，使用 Windows 自动化检查真实窗口。</li>
+      <li>运行最终测试、构建检查并提交交付节点。</li>
+    </ol>
+  </section>
+</body>
+</html>

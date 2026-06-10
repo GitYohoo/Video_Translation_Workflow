@@ -10,3 +10,5 @@ data/videos.json
 data/*.log
 .tmp/
 .dev-logs/
+.superpowers/
+release/

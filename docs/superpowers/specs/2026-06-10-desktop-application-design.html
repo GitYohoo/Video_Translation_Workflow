@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>影译工坊桌面应用设计</title>
+  <style>
+    body { font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif; line-height: 1.75; margin: 40px auto; max-width: 980px; padding: 0 24px; color: #1f2937; }
+    h1, h2 { color: #111827; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; }
+    .decision { border-left: 4px solid #24704c; background: #edf7f1; padding: 12px 16px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #d1d5db; padding: 10px 12px; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>影译工坊桌面应用设计</h1>
+  <p class="decision">目标：用户通过桌面快捷方式直接启动应用，不接触代码、终端、端口或开发服务器；保留现有 D 盘模型和 Python 环境，并提供清晰的环境位置与恢复入口。</p>
+
+  <h2>产品形态</h2>
+  <ul>
+    <li>应用名称：影译工坊。</li>
+    <li>Windows Electron 桌面应用，单实例运行。</li>
+    <li>同一窗口内启动内置 Express 服务，服务使用随机本地端口，不暴露给用户。</li>
+    <li>主窗口启动时先显示加载页，后端就绪后再显示 React 工作台，避免白屏和页面闪烁。</li>
+    <li>关闭应用时停止 HTTP 服务；后台工作流仍由现有任务系统管理。</li>
+  </ul>
+
+  <h2>文件与环境</h2>
+  <table>
+    <tr><th>内容</th><th>默认位置</th><th>说明</th></tr>
+    <tr><td>应用数据</td><td><code>D:\VideoTranslationWorkflow\data</code></td><td>项目目录、任务状态、日志和桌面设置。</td></tr>
+    <tr><td>大型运行环境</td><td><code>D:\VideoTranslationWorkflow\runtime</code></td><td>可在应用设置中选择现有 <code>.runtime</code> 目录并重启。</td></tr>
+    <tr><td>模型与 VoxCPM</td><td><code>D:\models</code></td><td>沿用现有运行设置，不打入安装包。</td></tr>
+    <tr><td>项目产物</td><td><code>D:\VideoTranslationProjects</code></td><td>沿用项目级工作目录设置。</td></tr>
+  </table>
+
+  <h2>桌面边界</h2>
+  <ul>
+    <li><code>electron/main.js</code>：窗口、单实例、后端启动、IPC、目录选择和退出清理。</li>
+    <li><code>electron/preload.js</code>：只暴露经过白名单限制的桌面能力。</li>
+    <li><code>electron/desktop-settings.js</code>：读取和写入桌面运行环境设置。</li>
+    <li><code>server/application-paths.js</code>：根据环境变量解析应用资源、数据和运行环境目录。</li>
+    <li><code>server/index.js</code>：导出可由 Electron 调用的 <code>startServer()</code>，直接运行时仍支持现有开发启动方式。</li>
+  </ul>
+
+  <h2>界面方向</h2>
+  <p>采用专业制作台风格：深石墨侧栏、浅灰工作区、森林绿主操作、少量琥珀警告色。卡片圆角控制在 8px 内，强调表格式信息密度和阶段可扫描性。桌面标题栏显示应用名称、服务状态和设置入口；设置弹窗展示版本、数据目录和运行环境状态。</p>
+
+  <h2>安装与交付</h2>
+  <ul>
+    <li>NSIS 安装包：允许用户选择 D 盘安装目录，创建桌面和开始菜单快捷方式。</li>
+    <li>Portable 便携版：无需安装，双击即可运行。</li>
+    <li>应用图标使用 1024×1024 PNG，由 electron-builder 转换为 Windows 所需格式。</li>
+    <li>安装包不包含 21GB 运行环境与模型，避免安装包过大；首次运行可选择现有运行环境目录。</li>
+  </ul>
+
+  <h2>验证标准</h2>
+  <ul>
+    <li>开发桌面模式可启动并打开项目页面。</li>
+    <li>安装目录包和便携版均可构建。</li>
+    <li>应用启动后无需单独运行 npm、Node 或浏览器。</li>
+    <li>现有 80 项 Node 测试、生产构建和新增桌面路径测试全部通过。</li>
+    <li>桌面窗口在 1440×900 和最小 1080×700 下无重叠或溢出。</li>
+  </ul>
+</body>
+</html>
