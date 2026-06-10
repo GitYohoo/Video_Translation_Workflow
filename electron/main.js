@@ -42,6 +42,12 @@ function codeRootDirectory() {
   return app.getAppPath();
 }
 
+function applicationFilesRoot() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, "app.asar.unpacked")
+    : codeRootDirectory();
+}
+
 async function prepareDesktopSettings() {
   const codeRoot = codeRootDirectory();
   const defaults = createDefaultDesktopSettings();
@@ -61,7 +67,7 @@ async function prepareDesktopSettings() {
 }
 
 function applyBackendEnvironment() {
-  process.env.VIDEO_TRANSLATION_APP_ROOT = codeRootDirectory();
+  process.env.VIDEO_TRANSLATION_APP_ROOT = applicationFilesRoot();
   process.env.VIDEO_TRANSLATION_DATA_DIR = desktopSettings.dataDirectory;
   process.env.VIDEO_TRANSLATION_RUNTIME_DIR = desktopSettings.runtimeDirectory;
 }
@@ -75,7 +81,7 @@ function createMainWindow() {
     show: false,
     backgroundColor: "#f4f6f8",
     title: "影译工坊",
-    icon: path.join(codeRootDirectory(), "build", "icon.png"),
+    icon: path.join(applicationFilesRoot(), "build", "icon.png"),
     autoHideMenuBar: true,
     titleBarStyle: "hidden",
     titleBarOverlay: {

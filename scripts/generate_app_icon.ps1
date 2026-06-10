@@ -33,6 +33,35 @@ $accentPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
 $graphics.DrawLine($accentPen, 392, 466, 632, 466)
 
 $bitmap.Save($outputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+
+$iconBitmap = New-Object System.Drawing.Bitmap 256, 256
+$iconGraphics = [System.Drawing.Graphics]::FromImage($iconBitmap)
+$iconGraphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+$iconGraphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+$iconGraphics.DrawImage($bitmap, 0, 0, 256, 256)
+$pngStream = New-Object System.IO.MemoryStream
+$iconBitmap.Save($pngStream, [System.Drawing.Imaging.ImageFormat]::Png)
+$pngBytes = $pngStream.ToArray()
+$iconPath = Join-Path $outputDirectory "icon.ico"
+$iconStream = [System.IO.File]::Create($iconPath)
+$iconWriter = New-Object System.IO.BinaryWriter $iconStream
+$iconWriter.Write([UInt16]0)
+$iconWriter.Write([UInt16]1)
+$iconWriter.Write([UInt16]1)
+$iconWriter.Write([byte]0)
+$iconWriter.Write([byte]0)
+$iconWriter.Write([byte]0)
+$iconWriter.Write([byte]0)
+$iconWriter.Write([UInt16]1)
+$iconWriter.Write([UInt16]32)
+$iconWriter.Write([UInt32]$pngBytes.Length)
+$iconWriter.Write([UInt32]22)
+$iconWriter.Write($pngBytes)
+$iconWriter.Dispose()
+$pngStream.Dispose()
+$iconGraphics.Dispose()
+$iconBitmap.Dispose()
+
 $accentPen.Dispose()
 $primaryPen.Dispose()
 $framePen.Dispose()
@@ -42,3 +71,4 @@ $graphics.Dispose()
 $bitmap.Dispose()
 
 Write-Output $outputPath
+Write-Output $iconPath
