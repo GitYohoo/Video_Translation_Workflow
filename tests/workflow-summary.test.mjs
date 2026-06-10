@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildWorkflowOverview } from "../src/workflow-summary.js";
+import { buildWorkflowOverview, workflowStageGroups } from "../src/workflow-summary.js";
 
 test("points a new referenced project to the first production step", () => {
   const overview = buildWorkflowOverview({
@@ -94,4 +94,19 @@ test("keeps completed workflow state visible for legacy storage records", () => 
 
   assert.equal(overview.completedCount, overview.totalCount);
   assert.equal(overview.nextAction, null);
+});
+
+test("groups the primary workflow into user-facing stages", () => {
+  assert.deepEqual(
+    workflowStageGroups.map((group) => ({
+      id: group.id,
+      stepIds: group.stepIds,
+    })),
+    [
+      { id: "assets", stepIds: ["separation", "ocr", "speakers"] },
+      { id: "subtitles", stepIds: ["finalSubtitles", "translation"] },
+      { id: "dubbing", stepIds: ["englishDubbing"] },
+      { id: "delivery", stepIds: ["finalVideo"] },
+    ],
+  );
 });

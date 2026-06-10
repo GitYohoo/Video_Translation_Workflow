@@ -58,6 +58,37 @@ const primarySteps = [
   },
 ];
 
+export const workflowStageGroups = [
+  {
+    id: "assets",
+    eyebrow: "阶段 01",
+    title: "素材准备",
+    description: "准备对白轨、画面字幕和候选说话人参考，后续翻译与配音都会复用这些素材。",
+    stepIds: ["separation", "ocr", "speakers"],
+  },
+  {
+    id: "subtitles",
+    eyebrow: "阶段 02",
+    title: "字幕翻译",
+    description: "合并中文字幕，交给 Gemini 翻译，再人工校对角色和英文字幕。",
+    stepIds: ["finalSubtitles", "translation"],
+  },
+  {
+    id: "dubbing",
+    eyebrow: "阶段 03",
+    title: "英文配音",
+    description: "生成英文配音和成片混音，必要时只重配一条并自动更新混音。",
+    stepIds: ["englishDubbing"],
+  },
+  {
+    id: "delivery",
+    eyebrow: "阶段 04",
+    title: "成片导出",
+    description: "确认字幕样式后替换英文音轨，烧录字幕并输出最终英文成片。",
+    stepIds: ["finalVideo"],
+  },
+];
+
 const completedStatus = new Set(["completed"]);
 const readyStatus = new Set(["ready", "failed"]);
 

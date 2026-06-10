@@ -10,7 +10,7 @@ import {
   useParams,
 } from "react-router-dom";
 import { artifactDisplayName } from "./path-display.js";
-import { buildWorkflowOverview } from "./workflow-summary.js";
+import { buildWorkflowOverview, workflowStageGroups } from "./workflow-summary.js";
 import "./styles.css";
 
 const defaultFinalVideoStyle = {
@@ -21,6 +21,9 @@ const defaultFinalVideoStyle = {
   backgroundOpacity: 1,
   bottomMargin: 148,
 };
+const workflowStageById = Object.fromEntries(
+  workflowStageGroups.map((group) => [group.id, group]),
+);
 
 async function requestJson(url, options) {
   const response = await fetch(url, options);
@@ -289,6 +292,19 @@ function ProjectWorkflowOverview({ overview, nextDisabled, onRunNext, onStepSele
           </li>
         ))}
       </ol>
+    </section>
+  );
+}
+
+function WorkflowStageSection({ group, children }) {
+  return (
+    <section className={`workflow-stage workflow-stage-${group.id}`} aria-labelledby={`stage-${group.id}`}>
+      <header className="workflow-stage-heading">
+        <p className="eyebrow">{group.eyebrow}</p>
+        <h2 id={`stage-${group.id}`}>{group.title}</h2>
+        <p>{group.description}</p>
+      </header>
+      <div className="workflow-stage-grid">{children}</div>
     </section>
   );
 }
@@ -1116,7 +1132,8 @@ function VideoPage({ videos, isLoading }) {
       />
       {openPathError && <p className="workflow-error page-error">{openPathError}</p>}
       <section className="project-content">
-        <div className="workflow-card" id="workflow-step-separation">
+        <WorkflowStageSection group={workflowStageById.assets}>
+          <div className="workflow-card" id="workflow-step-separation">
           <p className="eyebrow">步骤 01</p>
           <h2>BS-RoFormer 二轨分离</h2>
           <p>从原视频生成 DX 对白轨与 MX+FX 背景轨，为后续字幕与配音阶段提供素材。</p>
@@ -1283,8 +1300,10 @@ function VideoPage({ videos, isLoading }) {
                 ? "重新生成候选说话人"
                 : "开始提取候选说话人"}
           </button>
-        </div>
-        <div className="workflow-card" id="workflow-step-finalSubtitles">
+          </div>
+        </WorkflowStageSection>
+        <WorkflowStageSection group={workflowStageById.subtitles}>
+          <div className="workflow-card" id="workflow-step-finalSubtitles">
           <p className="eyebrow">步骤 04</p>
           <h2>合并最终中文字幕</h2>
           <p>将 OCR 标点字幕作为正文，合并 WhisperX 候选说话人标记，生成完整中文字幕文件。</p>
@@ -1516,8 +1535,10 @@ function VideoPage({ videos, isLoading }) {
           {subtitleEditorError && !subtitleEditor?.canEdit && (
             <p className="workflow-error">{subtitleEditorError}</p>
           )}
-        </div>
-        <div className="workflow-card manual-step" id="workflow-step-englishDubbing">
+          </div>
+        </WorkflowStageSection>
+        <WorkflowStageSection group={workflowStageById.dubbing}>
+          <div className="workflow-card manual-step" id="workflow-step-englishDubbing">
           <p className="eyebrow">步骤 06</p>
           <h2>VoxCPM 英文配音与混音</h2>
           <p>先将英文译稿同步到主时间轴并预检，再使用 VoxCPM 仅更新受影响配音片段，最后与 MX+FX 背景底轨混音。</p>
@@ -1664,8 +1685,10 @@ function VideoPage({ videos, isLoading }) {
           )}
           {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
           {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
-        </div>
-        <div className="workflow-card manual-step final-video-step" id="workflow-step-finalVideo">
+          </div>
+        </WorkflowStageSection>
+        <WorkflowStageSection group={workflowStageById.delivery}>
+          <div className="workflow-card manual-step final-video-step" id="workflow-step-finalVideo">
           <p className="eyebrow">步骤 08</p>
           <h2>替换英文音轨并烧录字幕</h2>
           <p>用英文成片混音替换原视频音频，并将受控英文字幕按所选样式烧录到视频中，输出最终英文成片。</p>
@@ -1820,7 +1843,8 @@ function VideoPage({ videos, isLoading }) {
                 ? "按当前样式重新生成最终成片"
                 : "替换音频并生成最终成片"}
           </button>
-        </div>
+          </div>
+        </WorkflowStageSection>
       </section>
     </main>
   );

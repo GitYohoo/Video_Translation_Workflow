@@ -609,9 +609,53 @@ button {
 }
 
 .project-content {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.workflow-stage {
+  scroll-margin-top: 24px;
+}
+
+.workflow-stage-heading {
+  align-items: end;
+  border-top: 1px solid #dfe6f1;
+  display: grid;
+  gap: 8px 24px;
+  grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
+  margin-bottom: 14px;
+  padding-top: 20px;
+}
+
+.workflow-stage-heading .eyebrow {
+  margin: 0;
+}
+
+.workflow-stage-heading h2 {
+  color: #151d2c;
+  font-size: 22px;
+  letter-spacing: 0;
+  margin: 0;
+}
+
+.workflow-stage-heading p:not(.eyebrow) {
+  color: var(--muted);
+  font-size: 13px;
+  grid-column: 2;
+  line-height: 1.65;
+  margin: 0;
+  max-width: 780px;
+}
+
+.workflow-stage-grid {
   display: grid;
   gap: 22px;
   grid-template-columns: repeat(2, minmax(320px, 1fr));
+}
+
+.workflow-stage-delivery .workflow-stage-grid {
+  grid-template-columns: 1fr;
 }
 
 .workflow-card {
@@ -1401,7 +1445,16 @@ button {
   }
 
   .project-content {
+    gap: 24px;
+  }
+
+  .workflow-stage-heading,
+  .workflow-stage-grid {
     grid-template-columns: 1fr;
+  }
+
+  .workflow-stage-heading p:not(.eyebrow) {
+    grid-column: 1;
   }
 
   .workflow-overview {
@@ -1603,7 +1656,16 @@ button {
 
   .project-content {
     gap: 13px;
-    grid-template-columns: 1fr;
+  }
+
+  .workflow-stage-heading {
+    gap: 6px;
+    margin-bottom: 10px;
+    padding-top: 16px;
+  }
+
+  .workflow-stage-heading h2 {
+    font-size: 19px;
   }
 
   .workflow-card {
