@@ -63,13 +63,18 @@ export function createTaskRunner({
       task.status = status;
       task.error = error;
       task.finishedAt = now();
-      if (status === "completed") {
-        await jobStore.finishJob(task.id, "completed");
-      } else {
-        await jobStore.failJob(task.id, error);
+      try {
+        if (status === "completed") {
+          await jobStore.finishJob(task.id, "completed");
+        } else {
+          await jobStore.failJob(task.id, error);
+        }
+      } catch (persistenceError) {
+        output.write(`\n写入任务状态失败：${persistenceError.message}\n`);
+      } finally {
+        removeActiveTask();
+        output.end(`\n任务状态：${status}\n`);
       }
-      removeActiveTask();
-      output.end(`\n任务状态：${status}\n`);
     }
 
     try {

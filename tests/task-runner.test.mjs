@@ -39,8 +39,12 @@ function runnerFixture(overrides = {}) {
         error: null,
       };
     },
-    finishJob: async (...arguments_) => calls.push(["finish", ...arguments_]),
-    failJob: async (...arguments_) => calls.push(["fail", ...arguments_]),
+    finishJob:
+      overrides.finishJob ||
+      (async (...arguments_) => calls.push(["finish", ...arguments_])),
+    failJob:
+      overrides.failJob ||
+      (async (...arguments_) => calls.push(["fail", ...arguments_])),
   };
   const taskRegistry = createTaskRegistry();
   const activeTasks = new Map();
@@ -192,4 +196,28 @@ test("cleans up and persists failure when spawning throws synchronously", async 
     "video-5-bs-roformer",
     "任务启动失败：invalid command",
   ]);
+});
+
+test("cleans up even when persisting the final state fails", async () => {
+  const fixture = runnerFixture({
+    finishJob: async () => {
+      throw new Error("disk full");
+    },
+  });
+  const task = await fixture.runner.start({
+    videoId: "video-6",
+    workflow: "bs-roformer",
+    logPath: "D:\\logs\\bs-persist-error.log",
+    activeTasks: fixture.activeTasks,
+    command: "python.exe",
+  });
+
+  fixture.child.emit("close", 0);
+  await nextTurn();
+
+  assert.equal(task.status, "completed");
+  assert.equal(fixture.activeTasks.has("video-6"), false);
+  assert.equal(fixture.taskRegistry.get(task.id), null);
+  assert.match(fixture.outputChunks.join(""), /写入任务状态失败：disk full/);
+  assert.match(fixture.outputChunks.join(""), /任务状态：completed/);
 });
