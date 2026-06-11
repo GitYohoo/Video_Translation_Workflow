@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>中文字幕简化流程实施计划</title></head>
+<body>
+  <h1>中文字幕简化流程实施计划</h1>
+  <blockquote><strong>执行要求：</strong>按测试驱动方式逐项实施，每项先观察测试因功能缺失而失败，再编写最小实现。</blockquote>
+  <p><strong>目标：</strong>选择视频后自动生成最终中文字幕，并在同一页面播放视频、定位和更正字幕。</p>
+  <p><strong>架构：</strong>把自动推进判断提取到纯函数模块，React 页面负责调用现有任务接口；后端增加独立的中文字幕编辑服务，避免改变现有英文翻译编辑器契约。</p>
+  <p><strong>技术栈：</strong>React 19、Express 5、Node.js test、Vite。</p>
+  <hr>
+  <h2>任务 1：自动推进决策</h2>
+  <p><strong>文件：</strong><code>src/simplified-workflow.js</code>、<code>tests/simplified-workflow.test.mjs</code></p>
+  <ol>
+    <li>编写失败测试：新项目返回 separation 与 ocr；DX 就绪返回 speakers；两个 SRT 就绪返回 finalSubtitles；完成或失败不再启动任务。</li>
+    <li>运行 <code>node --test tests/simplified-workflow.test.mjs</code>，确认因模块不存在而失败。</li>
+    <li>实现纯函数 <code>nextAutomaticActions</code> 和统一进度摘要。</li>
+    <li>重跑测试并确认通过。</li>
+  </ol>
+  <h2>任务 2：中文字幕编辑服务</h2>
+  <p><strong>文件：</strong><code>server/chinese-subtitle-editor.js</code>、<code>server/index.js</code>、<code>tests/chinese-subtitle-editor.test.mjs</code></p>
+  <ol>
+    <li>编写失败测试：读取 SRT、保存正文、拒绝缺失条目、拒绝空字幕、保持时间码。</li>
+    <li>运行单测并确认缺少模块。</li>
+    <li>实现解析、序列化、校验和文件写入函数，并接入 GET/PUT 路由。</li>
+    <li>重跑编辑器测试并确认通过。</li>
+  </ol>
+  <h2>任务 3：简化成果页</h2>
+  <p><strong>文件：</strong><code>src/main.jsx</code>、<code>src/styles.css</code>、<code>tests/simplified-page.test.mjs</code></p>
+  <ol>
+    <li>编写失败测试：页面使用视频内容地址、中文字幕编辑接口、自动推进函数，并不再渲染阶段区块和英文工作流。</li>
+    <li>运行测试确认失败。</li>
+    <li>替换 VideoPage：单一进度卡、最终 SRT、播放器、可编辑字幕列表、点击定位、播放高亮、保存和重试。</li>
+    <li>增加桌面与窄屏样式，播放器保持在成果页顶部。</li>
+    <li>重跑页面测试并确认通过。</li>
+  </ol>
+  <h2>任务 4：回归与构建</h2>
+  <ol>
+    <li>运行 <code>npm run test:node</code>，修复所有回归。</li>
+    <li>运行 <code>npm run build</code>，确认生产构建成功。</li>
+    <li>启动本地服务并检查选择视频、自动推进、成果展示、播放器和字幕保存。</li>
+    <li>检查 <code>git diff</code>，确认没有 Markdown 文件和无关改动。</li>
+  </ol>
+</body>
+</html>
