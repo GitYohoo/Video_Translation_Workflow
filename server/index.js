@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { resolveApplicationPaths } from "./application-paths.js";
 import { createCatalogStore } from "./catalog-store.js";
+import {
+  readChineseSubtitleFile,
+  saveChineseSubtitleFile,
+} from "./chinese-subtitle-editor.js";
 import { selectVideoPath } from "./file-dialog.js";
 import { createJobController } from "./job-controller.js";
 import { createJobStore, jobIdFor } from "./job-store.js";
@@ -2386,6 +2390,48 @@ app.post("/api/videos/:id/workflow/final-subtitles/run", async (request, respons
       return;
     }
     response.status(202).json(await startFinalSubtitles(video));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/workflow/chinese-subtitle-editor", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    const paths = finalSubtitlesOutputPaths(video);
+    if (!paths || !(await isFile(paths.srtPath))) {
+      response.status(409).json({ error: "请先生成最终中文字幕。" });
+      return;
+    }
+    response.json(await readChineseSubtitleFile(paths.srtPath));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/videos/:id/workflow/chinese-subtitle-editor", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    if (activeEnglishDubbingTasks.get(video.id)?.status === "running") {
+      response.status(409).json({ error: "英文配音正在运行，完成后再保存中文字幕修改。" });
+      return;
+    }
+    const paths = finalSubtitlesOutputPaths(video);
+    if (!paths || !(await isFile(paths.srtPath))) {
+      response.status(409).json({ error: "请先生成最终中文字幕。" });
+      return;
+    }
+    response.json(await saveChineseSubtitleFile(paths.srtPath, request.body?.cues));
   } catch (error) {
     next(error);
   }

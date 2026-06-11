@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   HashRouter,
@@ -21,6 +21,10 @@ import {
   X,
 } from "lucide-react";
 import { artifactDisplayName } from "./path-display.js";
+import {
+  nextAutomaticActions,
+  summarizeAutomaticWorkflow,
+} from "./simplified-workflow.js";
 import { buildWorkflowOverview, workflowStageGroups } from "./workflow-summary.js";
 import "./styles.css";
 
@@ -422,7 +426,7 @@ function WelcomePage({ videos, isAddingVideo, onAddPath }) {
             <p className="eyebrow">项目工作台</p>
             <h1>从原视频开始制作</h1>
             <p className="welcome-copy">
-              选择本机视频后即可进入分轨、字幕、配音与成片流程，原文件不会被复制。
+              选择视频后自动提取、识别并合并最终中文字幕，原文件不会被复制。
             </p>
           </div>
           <button className="primary-button" disabled={isAddingVideo} type="button" onClick={onAddPath}>
@@ -434,14 +438,12 @@ function WelcomePage({ videos, isAddingVideo, onAddPath }) {
         <section className="workflow-start" aria-labelledby="workflow-start-title">
           <div className="workflow-start-icon"><Play aria-hidden="true" size={22} fill="currentColor" /></div>
           <div className="workflow-start-copy">
-            <h2 id="workflow-start-title">一条清晰的制作路径</h2>
-            <p>每个项目都保留处理状态和产物位置，可以随时退出后继续。</p>
+            <h2 id="workflow-start-title">选择后自动执行</h2>
+            <p>中间产物自动处理，完成后直接播放视频并校对最终字幕。</p>
           </div>
           <ol className="start-stages">
-            <li><span>01</span><strong>音轨与字幕</strong></li>
-            <li><span>02</span><strong>角色与译稿</strong></li>
-            <li><span>03</span><strong>英文配音</strong></li>
-            <li><span>04</span><strong>成片交付</strong></li>
+            <li><span>01</span><strong>自动生成中文字幕</strong></li>
+            <li><span>02</span><strong>播放与校对</strong></li>
           </ol>
         </section>
 
@@ -625,6 +627,329 @@ function PathDialog({
         </div>
       </section>
     </div>
+  );
+}
+
+function SimplifiedVideoPage({ videos, isLoading }) {
+  const { videoId } = useParams();
+  const videoRef = useRef(null);
+  const inFlightActions = useRef(new Set());
+  const [record, setRecord] = useState(null);
+  const [notFound, setNotFound] = useState(false);
+  const [separation, setSeparation] = useState(null);
+  const [ocr, setOcr] = useState(null);
+  const [speakers, setSpeakers] = useState(null);
+  const [finalSubtitles, setFinalSubtitles] = useState(null);
+  const [workflowError, setWorkflowError] = useState("");
+  const [editorCues, setEditorCues] = useState([]);
+  const [editorError, setEditorError] = useState("");
+  const [editorMessage, setEditorMessage] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [isReplacingSource, setIsReplacingSource] = useState(false);
+  const [sourceReplaceMessage, setSourceReplaceMessage] = useState("");
+  const [currentTimeMs, setCurrentTimeMs] = useState(0);
+  const [openPathError, setOpenPathError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    const cached = videos.find((video) => video.id === videoId);
+    if (cached) {
+      setRecord(cached);
+      setNotFound(false);
+      return undefined;
+    }
+    if (!isLoading) {
+      requestJson(`/api/videos/${videoId}`)
+        .then((video) => active && setRecord(video))
+        .catch(() => active && setNotFound(true));
+    }
+    return () => {
+      active = false;
+    };
+  }, [isLoading, videoId, videos]);
+
+  const refreshStatuses = useCallback(async () => {
+    if (!record) {
+      return;
+    }
+    const [nextSeparation, nextOcr, nextSpeakers, nextFinalSubtitles] = await Promise.all([
+      requestJson(`/api/videos/${record.id}/workflow/bs-roformer`),
+      requestJson(`/api/videos/${record.id}/workflow/ocr-subtitles`),
+      requestJson(`/api/videos/${record.id}/workflow/whisperx-speakers`),
+      requestJson(`/api/videos/${record.id}/workflow/final-subtitles`),
+    ]);
+    setSeparation(nextSeparation);
+    setOcr(nextOcr);
+    setSpeakers(nextSpeakers);
+    setFinalSubtitles(nextFinalSubtitles);
+  }, [record]);
+
+  useEffect(() => {
+    if (!record) {
+      return undefined;
+    }
+    setSeparation(null);
+    setOcr(null);
+    setSpeakers(null);
+    setFinalSubtitles(null);
+    setEditorCues([]);
+    setWorkflowError("");
+    setEditorError("");
+    void refreshStatuses().catch((error) => setWorkflowError(error.message));
+    return undefined;
+  }, [record, refreshStatuses]);
+
+  useEffect(() => {
+    if (!record || finalSubtitles?.status === "completed") {
+      return undefined;
+    }
+    const interval = window.setInterval(() => {
+      void refreshStatuses().catch((error) => setWorkflowError(error.message));
+    }, 1500);
+    return () => window.clearInterval(interval);
+  }, [record, finalSubtitles?.status, refreshStatuses]);
+
+  const runAutomaticAction = useCallback(async (action) => {
+    if (!record || inFlightActions.current.has(action)) {
+      return;
+    }
+    const configuration = {
+      separation: ["bs-roformer", setSeparation],
+      ocr: ["ocr-subtitles", setOcr],
+      speakers: ["whisperx-speakers", setSpeakers],
+      finalSubtitles: ["final-subtitles", setFinalSubtitles],
+    }[action];
+    if (!configuration) {
+      return;
+    }
+    inFlightActions.current.add(action);
+    setWorkflowError("");
+    try {
+      const status = await requestJson(`/api/videos/${record.id}/workflow/${configuration[0]}/run`, {
+        method: "POST",
+      });
+      configuration[1](status);
+    } catch (error) {
+      setWorkflowError(error.message);
+    } finally {
+      inFlightActions.current.delete(action);
+    }
+  }, [record]);
+
+  useEffect(() => {
+    if (!record || !separation || !ocr || !speakers || !finalSubtitles) {
+      return;
+    }
+    const actions = nextAutomaticActions({
+      storageMode: record.storageMode,
+      separation,
+      ocr,
+      speakers,
+      finalSubtitles,
+    });
+    actions.forEach((action) => void runAutomaticAction(action));
+  }, [record, separation, ocr, speakers, finalSubtitles, runAutomaticAction]);
+
+  useEffect(() => {
+    if (!record || !finalSubtitles?.outputs?.srt?.ready) {
+      setEditorCues([]);
+      return undefined;
+    }
+    let active = true;
+    setEditorError("");
+    requestJson(`/api/videos/${record.id}/workflow/chinese-subtitle-editor`)
+      .then((result) => active && setEditorCues(result.cues || []))
+      .catch((error) => active && setEditorError(error.message));
+    return () => {
+      active = false;
+    };
+  }, [record, finalSubtitles?.outputs?.srt?.ready]);
+
+  const workflowSummary = summarizeAutomaticWorkflow({ separation, ocr, speakers, finalSubtitles });
+  const activeCueNumber = editorCues.find(
+    (cue) => currentTimeMs >= cue.startMs && currentTimeMs < cue.endMs,
+  )?.number;
+
+  const retryAutomaticWorkflow = () => {
+    const failedActions = [
+      ["separation", separation],
+      ["ocr", ocr],
+      ["speakers", speakers],
+      ["finalSubtitles", finalSubtitles],
+    ].filter(([, task]) => ["failed", "cancelled"].includes(task?.status));
+    if (failedActions.length > 0) {
+      failedActions.forEach(([action]) => void runAutomaticAction(action));
+      return;
+    }
+    void refreshStatuses().catch((error) => setWorkflowError(error.message));
+  };
+
+  const updateCueText = (number, text) => {
+    setEditorCues((current) => current.map((cue) => (cue.number === number ? { ...cue, text } : cue)));
+    setEditorMessage("");
+  };
+
+  const seekToCue = (cue) => {
+    if (!videoRef.current) {
+      return;
+    }
+    videoRef.current.currentTime = cue.startMs / 1000;
+    setCurrentTimeMs(cue.startMs);
+  };
+
+  const saveChineseSubtitles = async () => {
+    setIsSaving(true);
+    setEditorError("");
+    setEditorMessage("");
+    try {
+      const result = await requestJson(`/api/videos/${record.id}/workflow/chinese-subtitle-editor`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cues: editorCues.map(({ number, text }) => ({ number, text })) }),
+      });
+      setEditorCues(result.cues || []);
+      setEditorMessage("中文字幕已保存到最终 SRT。");
+    } catch (error) {
+      setEditorError(error.message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const replaceProjectSource = async () => {
+    setIsReplacingSource(true);
+    setSourceReplaceMessage("");
+    try {
+      const updated = await requestJson(`/api/videos/${record.id}/source/select`, { method: "POST" });
+      if (!updated) {
+        setSourceReplaceMessage("已取消重新选择原视频。");
+        return;
+      }
+      setRecord(updated);
+      setSourceReplaceMessage("原视频路径已更新，自动流程将继续执行。");
+    } catch (error) {
+      setSourceReplaceMessage(`重新选择原视频失败：${error.message}`);
+    } finally {
+      setIsReplacingSource(false);
+    }
+  };
+
+  const openFinalSubtitle = async (artifactKey) => {
+    setOpenPathError("");
+    try {
+      await requestJson(`/api/videos/${record.id}/open-artifact`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ artifactKey }),
+      });
+    } catch (error) {
+      setOpenPathError(error.message);
+    }
+  };
+
+  if (notFound) {
+    return <Navigate to="/" replace />;
+  }
+  if (!record) {
+    return <main className="detail-page loading">正在加载视频项目...</main>;
+  }
+
+  const sourceDisplayName = record.sourcePath
+    ? artifactDisplayName({ path: record.sourcePath })
+    : "未记录原视频路径，请重新选择原视频。";
+  const displayedError = workflowError || [separation, ocr, speakers, finalSubtitles].find(
+    (task) => task?.error,
+  )?.error;
+
+  return (
+    <main className="detail-page simplified-detail-page">
+      <header className="detail-header simplified-detail-header">
+        <div>
+          <p className="eyebrow">中文字幕项目</p>
+          <h1>{record.name}</h1>
+          <p className="file-meta">{formatSize(record.size)} · 自动生成最终中文字幕</p>
+          <p className={`project-path ${record.sourcePath ? "" : "warning"}`} title={record.sourcePath || sourceDisplayName}>
+            原视频：{sourceDisplayName}
+          </p>
+        </div>
+        <button className="secondary-button compact" disabled={isReplacingSource} type="button" onClick={replaceProjectSource}>
+          {isReplacingSource ? "等待选择..." : "重新选择原视频"}
+        </button>
+      </header>
+      {sourceReplaceMessage && <p className="copy-status">{sourceReplaceMessage}</p>}
+
+      <section className={`automatic-workflow-status ${workflowSummary.state}`} aria-label="自动字幕流程状态">
+        <div>
+          <p className="eyebrow">自动流程</p>
+          <h2>{workflowSummary.title}</h2>
+          <p>{workflowSummary.detail}</p>
+        </div>
+        <div className="automatic-progress" aria-label={`自动流程完成 ${workflowSummary.percent}%`}>
+          <span style={{ width: `${workflowSummary.percent}%` }} />
+        </div>
+        {(workflowSummary.state === "failed" || displayedError) && (
+          <button className="secondary-button compact" type="button" onClick={retryAutomaticWorkflow}>重试自动流程</button>
+        )}
+      </section>
+      {displayedError && <p className="workflow-error page-error">{displayedError}</p>}
+      {openPathError && <p className="workflow-error page-error">{openPathError}</p>}
+
+      {finalSubtitles?.outputs?.srt?.ready && (
+        <section className="subtitle-workbench" aria-label="最终中文字幕工作台">
+          <div className="video-review-panel">
+            <video
+              ref={videoRef}
+              className="review-video"
+              controls
+              preload="metadata"
+              src={`/api/videos/${record.id}/content`}
+              onTimeUpdate={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
+            >
+              当前环境不支持视频播放。
+            </video>
+            <FileResult
+              artifactKey="finalSubtitles.srt"
+              label="最终成果"
+              file={finalSubtitles.outputs.srt}
+              onOpen={openFinalSubtitle}
+              readyText="已生成"
+            />
+          </div>
+
+          <section className="chinese-subtitle-editor" aria-label="最终中文字幕编辑器">
+            <div className="chinese-editor-heading">
+              <div>
+                <p className="eyebrow">边看边改</p>
+                <h2>更正最终中文字幕</h2>
+                <p>点击时间码可跳到对应画面，时间轴保持只读。</p>
+              </div>
+              <button className="primary-button" disabled={isSaving || editorCues.length === 0} type="button" onClick={saveChineseSubtitles}>
+                {isSaving ? "正在保存..." : "保存中文字幕"}
+              </button>
+            </div>
+            {editorError && <p className="workflow-error">{editorError}</p>}
+            {editorMessage && <p className="copy-status">{editorMessage}</p>}
+            {editorCues.length === 0 && !editorError && <p className="copy-status">正在读取最终中文字幕...</p>}
+            <div className="chinese-cue-list">
+              {editorCues.map((cue) => (
+                <article className={`chinese-cue-row ${activeCueNumber === cue.number ? "active" : ""}`} key={cue.number}>
+                  <button className="cue-time-button" type="button" onClick={() => seekToCue(cue)}>
+                    <strong>{String(cue.number).padStart(3, "0")}</strong>
+                    <span>{cue.start} - {cue.end}</span>
+                  </button>
+                  <textarea
+                    aria-label={`第 ${cue.number} 条中文字幕`}
+                    rows={2}
+                    value={cue.text}
+                    onChange={(event) => updateCueText(cue.number, event.target.value)}
+                  />
+                </article>
+              ))}
+            </div>
+          </section>
+        </section>
+      )}
+    </main>
   );
 }
 
@@ -2377,7 +2702,7 @@ function App() {
               />
             }
           />
-          <Route path="/video/:videoId" element={<VideoPage videos={videos} isLoading={isLoading} />} />
+          <Route path="/video/:videoId" element={<SimplifiedVideoPage videos={videos} isLoading={isLoading} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
