@@ -14,7 +14,6 @@ PUNCTUATION = set("，。！？；：、,.!?;:…—“”‘’（）()《》�
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="使用 FunASR 对 OCR 中文字幕恢复标点。")
     parser.add_argument("--ocr-json", required=True, help="OCR 字幕数据 JSON")
-    parser.add_argument("--corrections-json", help="可选的系列词典 JSON，在标点恢复后应用")
     return parser.parse_args()
 
 
@@ -77,27 +76,11 @@ def distribute_punctuation(cues: list[dict], indices: list[int], punctuated_text
     return True
 
 
-def load_corrections(path: Path | None) -> dict[str, str]:
-    if path is None:
-        return {}
-    with path.open("r", encoding="utf-8-sig") as source:
-        corrections = json.load(source)
-    if not isinstance(corrections, dict) or not all(
-        isinstance(source, str) and isinstance(target, str)
-        for source, target in corrections.items()
-    ):
-        raise ValueError("词典 JSON 必须为字符串到字符串的映射。")
-    return corrections
+def clean_punctuation_text(text: str) -> str:
+    return text.replace("DNA,", "DNA，").replace(").", ")。")
 
 
-def clean_punctuation_text(text: str, corrections: dict[str, str]) -> str:
-    text = text.replace("DNA,", "DNA，").replace(").", ")。")
-    for source, replacement in corrections.items():
-        text = text.replace(source, replacement)
-    return text
-
-
-def punctuate_cues(cues: list[dict], corrections: dict[str, str]) -> tuple[list[dict], list[dict]]:
+def punctuate_cues(cues: list[dict]) -> tuple[list[dict], list[dict]]:
     import torch
     from funasr import AutoModel
 
@@ -113,44 +96,36 @@ def punctuate_cues(cues: list[dict], corrections: dict[str, str]) -> tuple[list[
         accepted = distribute_punctuation(punctuated, indices, restored_text)
         reports.append({"source": source_text, "punctuated": restored_text, "accepted": accepted})
     for cue in punctuated:
-        cue["text"] = clean_punctuation_text(cue["text"], corrections)
+        cue["text"] = clean_punctuation_text(cue["text"])
     return punctuated, reports
 
 
-def write_srt(path: Path, cues: list[dict], with_speaker: bool) -> None:
+def write_srt(path: Path, cues: list[dict]) -> None:
     with path.open("w", encoding="utf-8-sig", newline="\n") as output:
         for index, cue in enumerate(cues, start=1):
-            text = cue["text"]
-            if with_speaker and cue.get("candidate_speaker"):
-                text = f"[候选 {cue['candidate_speaker']}] {text}"
-            output.write(f"{index}\n{srt_time(cue['start'])} --> {srt_time(cue['end'])}\n{text}\n\n")
+            output.write(
+                f"{index}\n{srt_time(cue['start'])} --> {srt_time(cue['end'])}\n{cue['text']}\n\n"
+            )
 
 
 def main() -> int:
     args = parse_args()
     ocr_json = Path(args.ocr_json).resolve()
-    corrections_path = Path(args.corrections_json).resolve() if args.corrections_json else None
     with ocr_json.open("r", encoding="utf-8-sig") as source:
         data = json.load(source)
     cues = data["cues"]
-    corrections = load_corrections(corrections_path)
-    punctuated_cues, reports = punctuate_cues(cues, corrections)
+    punctuated_cues, reports = punctuate_cues(cues)
     output_dir = ocr_json.parent
     video_stem = re.sub(r"_OCR_字幕数据$", "", ocr_json.stem)
 
     srt_path = output_dir / f"{video_stem}_OCR_标点修复.srt"
-    speaker_srt_path = output_dir / f"{video_stem}_OCR_标点修复_候选说话人.srt"
-    final_speaker_srt_path = output_dir / f"{video_stem}_OCR_最终_带候选说话人.srt"
     json_path = output_dir / f"{video_stem}_OCR_标点修复数据.json"
-    write_srt(srt_path, punctuated_cues, with_speaker=False)
-    write_srt(speaker_srt_path, punctuated_cues, with_speaker=True)
-    write_srt(final_speaker_srt_path, punctuated_cues, with_speaker=True)
+    write_srt(srt_path, punctuated_cues)
     with json_path.open("w", encoding="utf-8") as output:
         json.dump(
             {
                 "cues": punctuated_cues,
                 "blocks": reports,
-                "corrections_json": str(corrections_path) if corrections_path else None,
             },
             output,
             ensure_ascii=False,
@@ -160,7 +135,7 @@ def main() -> int:
     rejected = sum(1 for report in reports if not report["accepted"])
     print(f"标点处理字幕条目：{len(punctuated_cues)}；文本块：{len(reports)}；拒绝改写块：{rejected}", flush=True)
     print(f"标点修复 SRT：{srt_path}", flush=True)
-    print(f"最终候选 Speaker SRT：{final_speaker_srt_path}", flush=True)
+    print(f"标点诊断 JSON：{json_path}", flush=True)
     return 0
 
 

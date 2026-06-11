@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>Gemini 外部输出刷新实施计划</title>
+</head>
+<body>
+  <h1>Gemini 外部输出刷新实施计划</h1>
+  <p><strong>目标：</strong>修复外部 Gemini JSON 已存在但前端仍显示未生成、读取按钮无反应的问题，并清理闲置标点输出。</p>
+  <p><strong>架构：</strong>继续以最终字幕状态接口作为磁盘产物的唯一事实来源。前端增加定时与焦点刷新，不引入文件监控服务。</p>
+  <p><strong>技术栈：</strong>React、Express、Python、Node Test、Vite。</p>
+  <h2>任务 1：回归测试</h2>
+  <ol>
+    <li>增加源码行为测试，断言读取按钮不依赖缓存的 JSON 就绪状态。</li>
+    <li>断言页面注册焦点刷新和空闲轮询。</li>
+    <li>断言标点脚本不再包含闲置输出及词典参数。</li>
+    <li>运行测试，确认旧实现失败。</li>
+  </ol>
+  <h2>任务 2：前端状态刷新</h2>
+  <ol>
+    <li>抽取统一的最终字幕状态刷新回调。</li>
+    <li>任务运行时每 1.5 秒刷新，空闲且最终字幕存在时每 4 秒刷新。</li>
+    <li>窗口获得焦点时立即刷新。</li>
+    <li>读取按钮只在读取请求执行期间禁用。</li>
+    <li>读取前刷新一次状态，并保留后端错误展示。</li>
+  </ol>
+  <h2>任务 3：标点脚本清理</h2>
+  <ol>
+    <li>删除未接线的词典参数与替换逻辑。</li>
+    <li>停止写出两个候选说话人 SRT。</li>
+    <li>保留标点 SRT、诊断 JSON 和拒绝块统计。</li>
+  </ol>
+  <h2>任务 4：验证</h2>
+  <ol>
+    <li>运行新增回归测试。</li>
+    <li>运行完整 Node 测试。</li>
+    <li>运行 Vite 构建。</li>
+    <li>通过当前桌面后端接口确认 Gemini JSON 状态与导入结果。</li>
+  </ol>
+</body>
+</html>

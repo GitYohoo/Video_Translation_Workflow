@@ -668,6 +668,21 @@ function VideoPage({ videos, isLoading }) {
   const [previewVersion, setPreviewVersion] = useState(0);
   const [openPathError, setOpenPathError] = useState("");
 
+  const refreshFinalSubtitlesStatus = useCallback(async () => {
+    if (!record) {
+      return null;
+    }
+    try {
+      const result = await requestJson(`/api/videos/${record.id}/workflow/final-subtitles`);
+      setFinalSubtitles(result);
+      setFinalSubtitlesError("");
+      return result;
+    } catch (error) {
+      setFinalSubtitlesError(error.message);
+      return null;
+    }
+  }, [record]);
+
   useEffect(() => {
     let isActive = true;
     const cached = videos.find((video) => video.id === videoId);
@@ -810,38 +825,37 @@ function VideoPage({ videos, isLoading }) {
     if (!record) {
       return undefined;
     }
-    let active = true;
-    requestJson(`/api/videos/${record.id}/workflow/final-subtitles`)
-      .then((result) => {
-        if (active) {
-          setFinalSubtitles(result);
-        }
-      })
-      .catch((error) => {
-        if (active) {
-          setFinalSubtitlesError(error.message);
-        }
-      });
-    return () => {
-      active = false;
-    };
+    void refreshFinalSubtitlesStatus().catch(() => {});
+    return undefined;
   }, [
     record,
     ocr?.outputs?.srt?.ready,
     speakers?.outputs?.srt?.ready,
+    refreshFinalSubtitlesStatus,
   ]);
 
   useEffect(() => {
-    if (!record || finalSubtitles?.status !== "running") {
+    if (
+      !record ||
+      (finalSubtitles?.status !== "running" && !finalSubtitles?.outputs?.srt?.ready)
+    ) {
       return undefined;
     }
+    const refreshDelay = finalSubtitles?.status === "running" ? 1500 : 4000;
     const interval = window.setInterval(() => {
-      requestJson(`/api/videos/${record.id}/workflow/final-subtitles`)
-        .then((result) => setFinalSubtitles(result))
-        .catch((error) => setFinalSubtitlesError(error.message));
-    }, 1500);
-    return () => window.clearInterval(interval);
-  }, [record, finalSubtitles?.status]);
+      void refreshFinalSubtitlesStatus().catch(() => {});
+    }, refreshDelay);
+    window.addEventListener("focus", refreshFinalSubtitlesStatus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshFinalSubtitlesStatus);
+    };
+  }, [
+    record,
+    finalSubtitles?.status,
+    finalSubtitles?.outputs?.srt?.ready,
+    refreshFinalSubtitlesStatus,
+  ]);
 
   useEffect(() => {
     if (!record || !finalSubtitles?.outputs?.srt?.ready) {
@@ -1096,6 +1110,7 @@ function VideoPage({ videos, isLoading }) {
     setSubtitleEditorError("");
     setSubtitleEditorMessage("");
     try {
+      await refreshFinalSubtitlesStatus();
       const result = await requestJson(`/api/videos/${record.id}/workflow/subtitle-editor/import-srt`, {
         method: "POST",
       });
@@ -1776,10 +1791,7 @@ function VideoPage({ videos, isLoading }) {
                 </div>
                 <button
                   className="secondary-button compact"
-                  disabled={
-                    isImportingTranslationSrt ||
-                    (!finalSubtitles.translationTarget.jsonReady && !finalSubtitles.translationTarget.srtReady)
-                  }
+                  disabled={isImportingTranslationSrt}
                   type="button"
                   onClick={importTranslationSrt}
                 >
