@@ -8,6 +8,7 @@ function hasStoppedTask(input) {
 
 export function nextAutomaticActions(input = {}) {
   if (
+    !input.started ||
     input.storageMode !== "reference" ||
     input.finalSubtitles?.status === "completed" ||
     hasStoppedTask(input)
@@ -52,6 +53,14 @@ export function summarizeAutomaticWorkflow(input = {}) {
       percent: 0,
     };
   }
+  if (!input.started) {
+    return {
+      state: "ready",
+      title: "准备生成最终中文字幕",
+      detail: "点击开始后，将自动连续执行到最终中文字幕。",
+      percent: 0,
+    };
+  }
   if (input.finalSubtitles?.status === "running") {
     return { state: "running", title: "正在生成最终中文字幕", detail: "正在合并正文与说话人标记。", percent: 90 };
   }
@@ -61,5 +70,11 @@ export function summarizeAutomaticWorkflow(input = {}) {
   if (input.ocr?.status === "running" || input.separation?.status === "running") {
     return { state: "running", title: "正在准备字幕素材", detail: "音轨分离与画面字幕提取正在自动执行。", percent: 30 };
   }
-  return { state: "ready", title: "自动生成最终中文字幕", detail: "选择视频后流程会自动开始，无需逐步点击。", percent: 5 };
+  return { state: "ready", title: "正在启动字幕流程", detail: "任务启动后会自动连续执行。", percent: 5 };
+}
+
+export function hasAutomaticWorkflowProgress(input = {}) {
+  return [input.separation, input.ocr, input.speakers, input.finalSubtitles].some(
+    (task) => task && !["ready", "blocked", "unavailable"].includes(task.status),
+  );
 }

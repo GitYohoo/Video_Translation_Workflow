@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { artifactDisplayName } from "./path-display.js";
 import {
+  hasAutomaticWorkflowProgress,
   nextAutomaticActions,
   summarizeAutomaticWorkflow,
 } from "./simplified-workflow.js";
@@ -426,7 +427,7 @@ function WelcomePage({ videos, isAddingVideo, onAddPath }) {
             <p className="eyebrow">项目工作台</p>
             <h1>从原视频开始制作</h1>
             <p className="welcome-copy">
-              选择视频后自动提取、识别并合并最终中文字幕，原文件不会被复制。
+              选择视频后点击开始，系统将自动提取、识别并合并最终中文字幕，原文件不会被复制。
             </p>
           </div>
           <button className="primary-button" disabled={isAddingVideo} type="button" onClick={onAddPath}>
@@ -438,11 +439,11 @@ function WelcomePage({ videos, isAddingVideo, onAddPath }) {
         <section className="workflow-start" aria-labelledby="workflow-start-title">
           <div className="workflow-start-icon"><Play aria-hidden="true" size={22} fill="currentColor" /></div>
           <div className="workflow-start-copy">
-            <h2 id="workflow-start-title">选择后自动执行</h2>
-            <p>中间产物自动处理，完成后直接播放视频并校对最终字幕。</p>
+            <h2 id="workflow-start-title">一次点击完成字幕流程</h2>
+            <p>点击开始后自动处理中间产物，完成后直接播放视频并校对最终字幕。</p>
           </div>
           <ol className="start-stages">
-            <li><span>01</span><strong>自动生成中文字幕</strong></li>
+            <li><span>01</span><strong>点击开始生成</strong></li>
             <li><span>02</span><strong>播放与校对</strong></li>
           </ol>
         </section>
@@ -649,6 +650,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   const [sourceReplaceMessage, setSourceReplaceMessage] = useState("");
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   const [openPathError, setOpenPathError] = useState("");
+  const [workflowStarted, setWorkflowStarted] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -682,6 +684,14 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     setOcr(nextOcr);
     setSpeakers(nextSpeakers);
     setFinalSubtitles(nextFinalSubtitles);
+    if (hasAutomaticWorkflowProgress({
+      separation: nextSeparation,
+      ocr: nextOcr,
+      speakers: nextSpeakers,
+      finalSubtitles: nextFinalSubtitles,
+    })) {
+      setWorkflowStarted(true);
+    }
   }, [record]);
 
   useEffect(() => {
@@ -693,6 +703,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     setSpeakers(null);
     setFinalSubtitles(null);
     setEditorCues([]);
+    setWorkflowStarted(false);
     setWorkflowError("");
     setEditorError("");
     void refreshStatuses().catch((error) => setWorkflowError(error.message));
@@ -700,14 +711,14 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   }, [record, refreshStatuses]);
 
   useEffect(() => {
-    if (!record || finalSubtitles?.status === "completed") {
+    if (!record || !workflowStarted || finalSubtitles?.status === "completed") {
       return undefined;
     }
     const interval = window.setInterval(() => {
       void refreshStatuses().catch((error) => setWorkflowError(error.message));
     }, 1500);
     return () => window.clearInterval(interval);
-  }, [record, finalSubtitles?.status, refreshStatuses]);
+  }, [record, workflowStarted, finalSubtitles?.status, refreshStatuses]);
 
   const runAutomaticAction = useCallback(async (action) => {
     if (!record || inFlightActions.current.has(action)) {
@@ -741,6 +752,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
       return;
     }
     const actions = nextAutomaticActions({
+      started: workflowStarted,
       storageMode: record.storageMode,
       separation,
       ocr,
@@ -748,7 +760,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
       finalSubtitles,
     });
     actions.forEach((action) => void runAutomaticAction(action));
-  }, [record, separation, ocr, speakers, finalSubtitles, runAutomaticAction]);
+  }, [record, workflowStarted, separation, ocr, speakers, finalSubtitles, runAutomaticAction]);
 
   useEffect(() => {
     if (!record || !finalSubtitles?.outputs?.srt?.ready) {
@@ -765,12 +777,19 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     };
   }, [record, finalSubtitles?.outputs?.srt?.ready]);
 
-  const workflowSummary = summarizeAutomaticWorkflow({ separation, ocr, speakers, finalSubtitles });
+  const workflowSummary = summarizeAutomaticWorkflow({
+    started: workflowStarted,
+    separation,
+    ocr,
+    speakers,
+    finalSubtitles,
+  });
   const activeCueNumber = editorCues.find(
     (cue) => currentTimeMs >= cue.startMs && currentTimeMs < cue.endMs,
   )?.number;
 
   const retryAutomaticWorkflow = () => {
+    setWorkflowStarted(true);
     const failedActions = [
       ["separation", separation],
       ["ocr", ocr],
@@ -887,6 +906,16 @@ function SimplifiedVideoPage({ videos, isLoading }) {
         <div className="automatic-progress" aria-label={`自动流程完成 ${workflowSummary.percent}%`}>
           <span style={{ width: `${workflowSummary.percent}%` }} />
         </div>
+        {!workflowStarted && finalSubtitles?.status !== "completed" && (
+          <button
+            className="primary-button compact"
+            disabled={record.storageMode !== "reference" || !separation || !ocr}
+            type="button"
+            onClick={() => setWorkflowStarted(true)}
+          >
+            开始生成中文字幕
+          </button>
+        )}
         {(workflowSummary.state === "failed" || displayedError) && (
           <button className="secondary-button compact" type="button" onClick={retryAutomaticWorkflow}>重试自动流程</button>
         )}

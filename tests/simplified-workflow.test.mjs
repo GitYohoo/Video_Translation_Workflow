@@ -8,6 +8,7 @@ import {
 test("starts separation and OCR together for a new referenced project", () => {
   assert.deepEqual(
     nextAutomaticActions({
+      started: true,
       storageMode: "reference",
       separation: { status: "ready" },
       ocr: { status: "ready" },
@@ -16,9 +17,22 @@ test("starts separation and OCR together for a new referenced project", () => {
   );
 });
 
+test("does not start a new project before the user clicks start", () => {
+  assert.deepEqual(
+    nextAutomaticActions({
+      started: false,
+      storageMode: "reference",
+      separation: { status: "ready" },
+      ocr: { status: "ready" },
+    }),
+    [],
+  );
+});
+
 test("starts speaker recognition after the dialogue track is ready", () => {
   assert.deepEqual(
     nextAutomaticActions({
+      started: true,
       storageMode: "reference",
       separation: { status: "completed" },
       ocr: { status: "running" },
@@ -31,6 +45,7 @@ test("starts speaker recognition after the dialogue track is ready", () => {
 test("starts final subtitle merge after both subtitle inputs are ready", () => {
   assert.deepEqual(
     nextAutomaticActions({
+      started: true,
       storageMode: "reference",
       separation: { status: "completed" },
       ocr: { status: "completed" },
@@ -44,6 +59,7 @@ test("starts final subtitle merge after both subtitle inputs are ready", () => {
 test("stops automatic actions after completion or failure", () => {
   assert.deepEqual(
     nextAutomaticActions({
+      started: true,
       storageMode: "reference",
       separation: { status: "failed" },
       ocr: { status: "ready" },
@@ -52,6 +68,7 @@ test("stops automatic actions after completion or failure", () => {
   );
   assert.deepEqual(
     nextAutomaticActions({
+      started: true,
       storageMode: "reference",
       finalSubtitles: { status: "completed" },
     }),
@@ -67,6 +84,18 @@ test("summarizes the final result as complete", () => {
       title: "最终中文字幕已生成",
       detail: "可以播放视频并在下方直接更正字幕。",
       percent: 100,
+    },
+  );
+});
+
+test("summarizes a new project as waiting for an explicit start", () => {
+  assert.deepEqual(
+    summarizeAutomaticWorkflow({ started: false }),
+    {
+      state: "ready",
+      title: "准备生成最终中文字幕",
+      detail: "点击开始后，将自动连续执行到最终中文字幕。",
+      percent: 0,
     },
   );
 });

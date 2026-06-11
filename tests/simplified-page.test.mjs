@@ -12,6 +12,12 @@ test("renders the source video and Chinese subtitle editor on the result page", 
   assert.match(source, /保存中文字幕/);
 });
 
+test("requires an explicit user click before starting the automatic workflow", () => {
+  assert.match(source, /开始生成中文字幕/);
+  assert.match(source, /setWorkflowStarted\(true\)/);
+  assert.match(source, /started: workflowStarted/);
+});
+
 test("uses automatic workflow decisions instead of manual stage controls", () => {
   assert.match(source, /nextAutomaticActions/);
   assert.match(source, /自动生成最终中文字幕/);
@@ -19,8 +25,8 @@ test("uses automatic workflow decisions instead of manual stage controls", () =>
 });
 
 test("describes the simplified two-step workflow on the welcome page", () => {
-  assert.match(source, /选择视频后自动提取、识别并合并最终中文字幕/);
-  assert.match(source, /<strong>自动生成中文字幕<\/strong>/);
+  assert.match(source, /选择视频后点击开始，系统将自动提取、识别并合并最终中文字幕/);
+  assert.match(source, /<strong>点击开始生成<\/strong>/);
   assert.match(source, /<strong>播放与校对<\/strong>/);
 });
 
