@@ -24,26 +24,44 @@ test("reads editable Chinese cues from the final SRT", async () => {
     end: "00:00:02,500",
     startMs: 1000,
     endMs: 2500,
-    text: "[旁白] 旧字幕",
+    speaker: "旁白",
+    text: "旧字幕",
   });
+  assert.equal(result.cues[1].speaker, "");
 });
 
-test("saves edited text while preserving numbering and timecodes", async () => {
+test("saves speaker and edited text while preserving numbering and timecodes", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "chinese-editor-"));
   const filePath = path.join(directory, "示例_最终中文字幕.srt");
   await fs.writeFile(filePath, sample, "utf8");
 
   await saveChineseSubtitleFile(filePath, [
-    { number: 1, text: "[旁白] 新字幕" },
-    { number: 2, text: "修改后的第二条" },
+    { number: 1, speaker: "队长", text: "新字幕" },
+    { number: 2, speaker: "", text: "修改后的第二条" },
   ]);
 
   const saved = await fs.readFile(filePath, "utf8");
-  assert.match(saved, /00:00:01,000 --> 00:00:02,500\n\[旁白\] 新字幕/);
+  assert.match(saved, /00:00:01,000 --> 00:00:02,500\n\[队长\] 新字幕/);
   assert.match(saved, /00:00:03,000 --> 00:00:04,000\n修改后的第二条/);
 });
 
-test("rejects missing or empty edited cues", async () => {
+test("allows empty edited text and keeps the cue readable", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "chinese-editor-"));
+  const filePath = path.join(directory, "示例_最终中文字幕.srt");
+  await fs.writeFile(filePath, sample, "utf8");
+
+  await saveChineseSubtitleFile(filePath, [
+    { number: 1, speaker: "旁白", text: "" },
+    { number: 2, speaker: "", text: "第二条" },
+  ]);
+
+  const result = await readChineseSubtitleFile(filePath);
+  assert.equal(result.cues[0].speaker, "旁白");
+  assert.equal(result.cues[0].text, "");
+  assert.equal(result.cues[1].text, "第二条");
+});
+
+test("rejects missing edited cues", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "chinese-editor-"));
   const filePath = path.join(directory, "示例_最终中文字幕.srt");
   await fs.writeFile(filePath, sample, "utf8");
@@ -51,13 +69,6 @@ test("rejects missing or empty edited cues", async () => {
   await assert.rejects(
     () => saveChineseSubtitleFile(filePath, [{ number: 1, text: "只提交一条" }]),
     /字幕条目数量不一致/,
-  );
-  await assert.rejects(
-    () => saveChineseSubtitleFile(filePath, [
-      { number: 1, text: "" },
-      { number: 2, text: "第二条" },
-    ]),
-    /第 1 条字幕正文不能为空/,
   );
 });
 
@@ -67,4 +78,15 @@ test("the route protects the master subtitles while English dubbing is running",
     serverSource,
     /activeEnglishDubbingTasks\.get\(video\.id\)\?\.status === "running"[\s\S]+英文配音正在运行/,
   );
+});
+
+test("translation editing accepts empty Chinese master subtitle text", async () => {
+  const serverSource = await fs.readFile(new URL("../server/index.js", import.meta.url), "utf8");
+  const parserSource = serverSource.slice(
+    serverSource.indexOf("function parseEditableSubtitleDocument"),
+    serverSource.indexOf("function parseTranslatedSubtitleTextDocument"),
+  );
+
+  assert.match(parserSource, /lines\.length < 2/);
+  assert.doesNotMatch(parserSource, /没有字幕正文/);
 });

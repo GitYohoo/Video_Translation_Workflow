@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 
 export const defaultRuntimeSettings = {
-  projectWorkspaceRoot: "D:\\VideoTranslationProjects",
   voxCpmPython: "D:\\models\\indextts2-venv\\Scripts\\python.exe",
   voxCpmTempDirectory: "D:\\Temp\\VoxCPMRuntime",
   whisperxTokenPath: "D:\\models\\huggingface\\token",
@@ -13,10 +12,6 @@ function cleanString(value, fallback) {
 
 export function normalizeRuntimeSettings(value = {}) {
   return {
-    projectWorkspaceRoot: cleanString(
-      value.projectWorkspaceRoot,
-      defaultRuntimeSettings.projectWorkspaceRoot,
-    ),
     voxCpmPython: cleanString(value.voxCpmPython, defaultRuntimeSettings.voxCpmPython),
     voxCpmTempDirectory: cleanString(
       value.voxCpmTempDirectory,

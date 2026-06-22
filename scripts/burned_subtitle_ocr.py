@@ -24,6 +24,7 @@ CHAR_NORMALIZATION = str.maketrans(
         "決": "决",
         "跡": "迹",
         "沒": "没",
+        "註": "注",
     }
 )
 
@@ -150,9 +151,15 @@ def append_cue(cues: list[dict], text: str, start: float, end: float, confidence
 def related_text(left: str, right: str, corrections: dict[str, str]) -> bool:
     left_text = comparable_text(left, corrections)
     right_text = comparable_text(right, corrections)
+    one_character_variant = (
+        len(left_text) == len(right_text)
+        and len(left_text) >= 4
+        and sum(left_char != right_char for left_char, right_char in zip(left_text, right_text)) == 1
+    )
     return (
         right_text in left_text
         or left_text in right_text
+        or one_character_variant
         or SequenceMatcher(None, left_text, right_text).ratio() >= 0.82
     )
 

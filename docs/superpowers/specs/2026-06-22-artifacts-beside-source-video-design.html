@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>项目产物迁移至原视频目录设计</title>
+  <style>
+    body { max-width: 960px; margin: 40px auto; padding: 0 24px; color: #18212f; font: 16px/1.7 system-ui, sans-serif; }
+    h1, h2 { line-height: 1.3; }
+    code { padding: 2px 6px; border-radius: 5px; background: #eef2f6; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 12px; border: 1px solid #ccd5df; text-align: left; vertical-align: top; }
+    th { background: #f2f5f8; }
+    .decision { padding: 14px 18px; border-left: 4px solid #2878c8; background: #edf6ff; }
+  </style>
+</head>
+<body>
+  <h1>项目产物迁移至原视频目录设计</h1>
+  <p>日期：2026-06-22</p>
+
+  <section>
+    <h2>目标</h2>
+    <p class="decision">
+      对现有项目执行一次性历史产物迁移；迁移完成后，程序生成的全部项目产物永久写入原视频所在目录，不再使用
+      <code>D:\VideoTranslationProjects</code> 作为项目产物根目录。
+    </p>
+    <p>模型、Python 环境、应用数据、任务状态和运行日志继续保存在 D 盘现有应用目录，不属于本次迁移范围。</p>
+  </section>
+
+  <section>
+    <h2>路径规则</h2>
+    <table>
+      <thead>
+        <tr><th>类型</th><th>新位置</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>BS-RoFormer、OCR、WhisperX</td><td>原视频父目录下的现有命名子目录</td></tr>
+        <tr><td>最终中文字幕、英文翻译字幕、英文配音</td><td>原视频父目录下的现有命名子目录</td></tr>
+        <tr><td>最终英文成片、ASS、报告、参考帧</td><td>原视频父目录及其现有子目录</td></tr>
+        <tr><td>运行环境、模型、缓存</td><td>保持 D 盘现有位置</td></tr>
+        <tr><td>应用任务日志与项目目录索引</td><td>保持 <code>D:\VideoTranslationWorkflow\data</code></td></tr>
+      </tbody>
+    </table>
+    <p>路径解析器将以 <code>path.dirname(record.sourcePath)</code> 作为唯一项目产物根目录，历史记录中的
+      <code>workspaceDirectory</code> 不再参与输出路径计算。</p>
+  </section>
+
+  <section>
+    <h2>一次性历史迁移</h2>
+    <p>新增独立迁移脚本，从应用目录中的 <code>videos.json</code> 读取项目记录，将每个记录的
+      <code>workspaceDirectory</code> 内容递归迁移到对应原视频父目录。</p>
+    <ol>
+      <li>确认源项目目录存在，且项目记录包含有效原视频路径。</li>
+      <li>逐文件计算 SHA-256。</li>
+      <li>目标文件不存在时直接复制。</li>
+      <li>目标文件存在且哈希相同时跳过复制，并记为去重。</li>
+      <li>目标文件存在但哈希不同时，将目标旧文件复制到带时间戳的备份目录，再复制迁移文件。</li>
+      <li>重新计算目标文件 SHA-256，确认与源文件一致。</li>
+      <li>项目全部文件验证成功后，删除旧项目目录。</li>
+      <li>更新 <code>videos.json</code>，移除该项目的 <code>workspaceDirectory</code> 字段。</li>
+    </ol>
+    <p>任一文件迁移或校验失败时，不删除对应旧项目目录，也不移除其历史字段。</p>
+  </section>
+
+  <section>
+    <h2>备份与报告</h2>
+    <p>冲突备份放在原视频父目录下的带时间戳目录中，例如
+      <code>产物迁移备份_20260622-123000</code>。迁移报告写入 D 盘应用数据目录，输出 JSON 和 HTML 两种格式。</p>
+    <p>报告包含项目、源目录、目标目录、复制文件、去重文件、冲突备份、失败文件、校验结果和旧目录清理结果。</p>
+  </section>
+
+  <section>
+    <h2>程序行为修改</h2>
+    <ul>
+      <li>新建项目时不再创建或记录 <code>workspaceDirectory</code>。</li>
+      <li>重新选择原视频时，不再生成项目工作目录。</li>
+      <li>已有记录即使残留 <code>workspaceDirectory</code>，输出也强制写入原视频目录。</li>
+      <li>界面中的“输出写入原视频同级目录”文案与实际行为保持一致。</li>
+      <li>版本号从 <code>0.2.10</code> 更新为 <code>0.2.11</code>。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>测试与验收</h2>
+    <ul>
+      <li>路径单元测试：带有旧 <code>workspaceDirectory</code> 的记录仍解析到原视频目录。</li>
+      <li>记录单元测试：新建和重新绑定原视频不再写入 <code>workspaceDirectory</code>。</li>
+      <li>迁移测试：覆盖直接复制、相同文件去重、冲突备份、校验失败保留源目录。</li>
+      <li>真实迁移前先执行预检模式，输出计划但不修改文件。</li>
+      <li>真实迁移后核对报告、目录哈希和旧项目目录清理结果。</li>
+      <li>运行完整 Python 测试、Node 测试和生产构建。</li>
+    </ul>
+  </section>
+</body>
+</html>

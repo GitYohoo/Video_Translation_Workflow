@@ -1,7 +1,7 @@
 node_modules/
 dist/
 .runtime/
-scripts/__pycache__/
+__pycache__/
 data/uploads/
 data/thumbnails/
 data/logs/

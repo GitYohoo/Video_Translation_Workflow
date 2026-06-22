@@ -1,16 +1,7 @@
 import path from "node:path";
 
-const unsafePathCharacters = /[<>:"/\\|?*\u0000-\u001F]/g;
-
 function outputRootDirectory(record) {
-  return record.workspaceDirectory || path.dirname(record.sourcePath);
-}
-
-export function projectWorkspaceDirectory(sourcePath, id, workspaceRootDirectory) {
-  const sourceStem = path.parse(sourcePath).name || "video";
-  const safeStem = sourceStem.replace(unsafePathCharacters, "_").trim() || "video";
-  const shortId = String(id || "").replace(/-/g, "").slice(0, 8) || "project";
-  return path.join(workspaceRootDirectory, `${safeStem}_${shortId}`);
+  return path.dirname(record.sourcePath);
 }
 
 function fileArtifact(key, label, filePath) {
@@ -180,9 +171,9 @@ export function createProjectPathResolver({ uploadDirectory }) {
       styledAssPath: path.join(outputDirectory, `${prefix}_英文上方字幕.ass`),
       videoPath: path.join(outputDirectory, `${prefix}_内嵌英文字幕.mp4`),
       reportPath: path.join(outputDirectory, "英文配音视频成片结果.html"),
-      previewPaths: [1, 2, 3].map((number) =>
-        path.join(outputDirectory, "字幕样式参考帧", `参考帧_${String(number).padStart(2, "0")}.jpg`),
-      ),
+      previewPaths: [
+        path.join(outputDirectory, "字幕样式参考帧", "字幕编辑参考帧.jpg"),
+      ],
       prefix,
     };
   }
@@ -205,7 +196,6 @@ export function createProjectPathResolver({ uploadDirectory }) {
     };
 
     add(fileArtifact("source.video", "原视频", record.sourcePath));
-    add(directoryArtifact("project.workspaceDirectory", "项目工作目录", record.workspaceDirectory));
     add(directoryArtifact("bsRoformer.outputDirectory", "BS-RoFormer 输出目录", separation?.outputDirectory));
     add(fileArtifact("bsRoformer.dialogue", "DX 对白轨", separation?.dialoguePath));
     add(fileArtifact("bsRoformer.background", "MX+FX 背景底轨", separation?.backgroundPath));

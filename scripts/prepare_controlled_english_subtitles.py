@@ -50,26 +50,43 @@ def parse_time(value: str) -> int:
 
 
 def load_srt(path: Path) -> list[Cue]:
-    blocks = re.split(r"\r?\n\s*\r?\n", path.read_text(encoding="utf-8-sig").strip())
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
     cues: list[Cue] = []
-    for position, block in enumerate(blocks, start=1):
-        lines = block.splitlines()
-        if len(lines) < 3:
-            raise ValueError(f"SRT 第 {position} 个段落格式错误。")
+    cursor = 0
+    while cursor < len(lines):
+        while cursor < len(lines) and not lines[cursor].strip():
+            cursor += 1
+        if cursor >= len(lines):
+            break
+        position = len(cues) + 1
         try:
-            number = int(lines[0].strip())
+            number = int(lines[cursor].strip())
         except ValueError as error:
-            raise ValueError(f"SRT 第 {position} 个段落序号无效：{lines[0]}") from error
-        match = TIME_PATTERN.search(lines[1])
+            raise ValueError(
+                f"SRT 第 {position} 个段落序号无效：{lines[cursor]}"
+            ) from error
+        cursor += 1
+        if cursor >= len(lines):
+            raise ValueError(f"SRT 第 {position} 个段落格式错误。")
+        match = TIME_PATTERN.search(lines[cursor])
         if not match:
-            raise ValueError(f"SRT 第 {number} 段时间格式无效：{lines[1]}")
+            raise ValueError(f"SRT 第 {number} 段时间格式无效：{lines[cursor]}")
         start = match.group("start").replace(".", ",")
         end = match.group("end").replace(".", ",")
         if parse_time(end) <= parse_time(start):
             raise ValueError(f"SRT 第 {number} 段结束时间必须晚于开始时间。")
-        text = "\n".join(lines[2:]).strip()
-        if not text:
-            raise ValueError(f"SRT 第 {number} 段没有字幕正文。")
+        cursor += 1
+        text_lines: list[str] = []
+        while cursor < len(lines):
+            next_line_is_number = lines[cursor].strip().isdigit()
+            next_line_is_time = (
+                cursor + 1 < len(lines) and TIME_PATTERN.search(lines[cursor + 1])
+            )
+            if next_line_is_number and next_line_is_time:
+                break
+            text_lines.append(lines[cursor])
+            cursor += 1
+        text = "\n".join(text_lines).strip()
         cues.append(Cue(number, start, end, text))
     if not cues:
         raise ValueError(f"SRT 没有字幕条目：{path}")

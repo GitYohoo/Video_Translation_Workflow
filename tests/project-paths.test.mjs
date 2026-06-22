@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import {
-  createProjectPathResolver,
-  projectWorkspaceDirectory,
-} from "../server/project-paths.js";
+import { createProjectPathResolver } from "../server/project-paths.js";
 import {
   defaultRuntimeSettings,
   normalizeRuntimeSettings,
@@ -31,6 +28,7 @@ test("derives stable artifact keys with display names", () => {
   assert.equal(artifacts["finalVideo.video"].displayName, "示例视频_英文配音_内嵌英文字幕.mp4");
   assert.equal(artifacts["finalVideo.video"].kind, "file");
   assert.equal(artifacts["finalVideo.outputDirectory"].kind, "directory");
+  assert.equal("project.workspaceDirectory" in artifacts, false);
 });
 
 test("looks up artifacts by key and rejects unknown keys", () => {
@@ -79,7 +77,7 @@ test("formats path leaves for compact artifact display", () => {
   assert.equal(artifactDisplayName(null), "");
 });
 
-test("uses project workspace directory for new project outputs", () => {
+test("always writes project outputs beside the source video", () => {
   const workspaceRecord = {
     ...record,
     id: "workspace-video",
@@ -88,26 +86,19 @@ test("uses project workspace directory for new project outputs", () => {
 
   assert.equal(
     resolver.bsRoformerOutputPaths(workspaceRecord).outputDirectory,
-    "D:\\VideoTranslationProjects\\示例视频_workspace\\BS-RoFormer_二轨分离",
+    "D:\\素材库\\短剧\\第一集\\BS-RoFormer_二轨分离",
   );
   assert.equal(
     resolver.finalVideoOutputPaths(workspaceRecord).outputDirectory,
-    "D:\\VideoTranslationProjects\\示例视频_workspace",
+    "D:\\素材库\\短剧\\第一集",
+  );
+  assert.deepEqual(
+    resolver.finalVideoOutputPaths(workspaceRecord).previewPaths,
+    ["D:\\素材库\\短剧\\第一集\\字幕样式参考帧\\字幕编辑参考帧.jpg"],
   );
   assert.equal(
     resolver.bsRoformerOutputPaths(record).outputDirectory,
     "D:\\素材库\\短剧\\第一集\\BS-RoFormer_二轨分离",
-  );
-});
-
-test("builds safe D drive project workspace directories", () => {
-  assert.equal(
-    projectWorkspaceDirectory(
-      "D:\\素材库\\短剧\\第一集\\A:B*测试?.mp4",
-      "12345678-90ab-cdef-1234-567890abcdef",
-      "D:\\VideoTranslationProjects",
-    ),
-    "D:\\VideoTranslationProjects\\A_B_测试__12345678",
   );
 });
 
@@ -117,7 +108,7 @@ test("normalizes runtime settings with D drive defaults and overrides", () => {
     voxCpmPython: "D:\\Python\\python.exe",
   });
 
-  assert.equal(settings.projectWorkspaceRoot, "D:\\Projects");
+  assert.equal("projectWorkspaceRoot" in settings, false);
   assert.equal(settings.voxCpmPython, "D:\\Python\\python.exe");
   assert.equal(settings.voxCpmTempDirectory, defaultRuntimeSettings.voxCpmTempDirectory);
 });

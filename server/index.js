@@ -17,7 +17,6 @@ import { createJobStore, jobIdFor } from "./job-store.js";
 import { terminateChildProcess } from "./process-control.js";
 import {
   createProjectPathResolver,
-  projectWorkspaceDirectory,
 } from "./project-paths.js";
 import { createJobRouter } from "./routes/job-routes.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
@@ -314,7 +313,8 @@ function finalVideoStyle(value = {}) {
       ? value.fontName.trim().slice(0, 80)
       : "Segoe UI Semibold";
   const fontSize = Number(value.fontSize ?? 50);
-  const bottomMargin = Number(value.bottomMargin ?? 148);
+  const positionX = Number(value.positionX ?? 50);
+  const positionY = Number(value.positionY ?? 84);
   const backgroundOpacity = Number(value.backgroundOpacity ?? 1);
   const textColor =
     typeof value.textColor === "string" && /^#[0-9a-f]{6}$/i.test(value.textColor)
@@ -327,13 +327,24 @@ function finalVideoStyle(value = {}) {
   if (!Number.isFinite(fontSize) || fontSize < 18 || fontSize > 96) {
     throw new Error("字幕字号必须在 18 至 96 之间。");
   }
-  if (!Number.isFinite(bottomMargin) || bottomMargin < 20 || bottomMargin > 500) {
-    throw new Error("字幕下边距必须在 20 至 500 之间。");
+  if (!Number.isFinite(positionX) || positionX < 0 || positionX > 100) {
+    throw new Error("字幕横向位置必须在 0% 至 100% 之间。");
+  }
+  if (!Number.isFinite(positionY) || positionY < 0 || positionY > 100) {
+    throw new Error("字幕纵向位置必须在 0% 至 100% 之间。");
   }
   if (!Number.isFinite(backgroundOpacity) || backgroundOpacity < 0 || backgroundOpacity > 1) {
     throw new Error("字幕背景不透明度必须在 0 至 1 之间。");
   }
-  return { fontName, fontSize, textColor, backgroundColor, backgroundOpacity, bottomMargin };
+  return {
+    fontName,
+    fontSize,
+    textColor,
+    backgroundColor,
+    backgroundOpacity,
+    positionX,
+    positionY,
+  };
 }
 
 async function isFile(filePath) {
@@ -459,7 +470,7 @@ function parseEditableSubtitleDocument(content, label) {
   return blocks.map((block, index) => {
     const lines = block.split(/\r?\n/);
     const number = Number(lines[0]?.trim());
-    if (!Number.isInteger(number) || number <= 0 || lines.length < 3) {
+    if (!Number.isInteger(number) || number <= 0 || lines.length < 2) {
       throw new Error(`${label}第 ${index + 1} 段格式无效。`);
     }
     const timeMatch = editableSubtitleTimePattern.exec(lines[1]?.trim());
@@ -474,9 +485,6 @@ function parseEditableSubtitleDocument(content, label) {
       throw new Error(`${label}第 ${number} 段结束时间必须晚于开始时间。`);
     }
     const text = lines.slice(2).join("\n").trim();
-    if (!text) {
-      throw new Error(`${label}第 ${number} 段没有字幕正文。`);
-    }
     return { number, start, end, startMs, endMs, text };
   });
 }
@@ -1925,8 +1933,10 @@ function finalVideoArguments(paths, style, previewOnly = false) {
     style.backgroundColor,
     "--background-opacity",
     String(style.backgroundOpacity),
-    "--bottom-margin",
-    String(style.bottomMargin),
+    "--position-x",
+    String(style.positionX),
+    "--position-y",
+    String(style.positionY),
     "--overwrite",
   ];
   if (previewOnly) {
@@ -2094,11 +2104,6 @@ async function buildReferenceRecord(sourcePath) {
     id,
     name: path.basename(resolvedPath),
     sourcePath: resolvedPath,
-    workspaceDirectory: projectWorkspaceDirectory(
-      resolvedPath,
-      id,
-      runtimeSettings.projectWorkspaceRoot,
-    ),
     size: stats.size,
     type: videoMimeTypes.get(extension),
     createdAt: Date.now(),
@@ -2130,13 +2135,7 @@ async function addReferencePaths(paths) {
     if (legacyCopy) {
       legacyFilesToDelete.push(path.join(uploadDirectory, legacyCopy.fileName));
       legacyCopy.sourcePath = incoming.sourcePath;
-      legacyCopy.workspaceDirectory =
-        legacyCopy.workspaceDirectory ||
-        projectWorkspaceDirectory(
-          incoming.sourcePath,
-          legacyCopy.id,
-          runtimeSettings.projectWorkspaceRoot,
-        );
+      delete legacyCopy.workspaceDirectory;
       legacyCopy.type = incoming.type;
       delete legacyCopy.fileName;
       created.push(legacyCopy);
@@ -2256,7 +2255,7 @@ app.post("/api/videos/:id/source/select", async (request, response, next) => {
       return;
     }
     const incoming = await buildReferenceRecord(sourcePath);
-    applySelectedSourceToRecord(video, incoming, runtimeSettings.projectWorkspaceRoot);
+    applySelectedSourceToRecord(video, incoming);
     await writeCatalog(videos);
     response.json(publicVideo(video));
   } catch (error) {

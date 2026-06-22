@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { applySelectedSourceToRecord } from "../server/source-record.js";
 
-test("updates a project source path while preserving its workspace directory", () => {
+test("updates a project source path and removes the legacy workspace directory", () => {
   const record = {
     id: "video-1",
     name: "旧路径.mp4",
@@ -23,7 +23,7 @@ test("updates a project source path while preserving its workspace directory", (
   assert.equal(updated, record);
   assert.equal(record.name, "新路径.mp4");
   assert.equal(record.sourcePath, "D:\\新目录\\新路径.mp4");
-  assert.equal(record.workspaceDirectory, "D:\\workspace\\video-1");
+  assert.equal("workspaceDirectory" in record, false);
 });
 
 test("rejects replacement files that do not match the recorded size", () => {

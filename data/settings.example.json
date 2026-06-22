@@ -1,5 +1,4 @@
 {
-  "projectWorkspaceRoot": "D:\\VideoTranslationProjects",
   "voxCpmPython": "D:\\models\\indextts2-venv\\Scripts\\python.exe",
   "voxCpmTempDirectory": "D:\\Temp\\VoxCPMRuntime",
   "whisperxTokenPath": "D:\\models\\huggingface\\token"

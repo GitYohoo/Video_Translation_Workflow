@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>项目产物迁移实施计划</title></head>
+<body>
+  <h1>项目产物迁移实施计划</h1>
+  <p><strong>目标：</strong>一次性迁移历史产物，并让后续全部项目产物写入原视频目录。</p>
+  <ol>
+    <li>为路径解析器和项目记录行为补充失败测试。</li>
+    <li>修改路径解析和项目记录创建逻辑，移除对 <code>workspaceDirectory</code> 的依赖。</li>
+    <li>为迁移器补充复制、去重、冲突备份、校验和清理测试。</li>
+    <li>实现迁移器与一次性执行脚本，支持预检及 JSON/HTML 报告。</li>
+    <li>预检现有三个历史项目，检查迁移计划与冲突。</li>
+    <li>执行真实迁移，校验 SHA-256，更新项目记录并删除已迁移旧目录。</li>
+    <li>更新版本至 <code>0.2.11</code>，运行完整测试和生产构建。</li>
+  </ol>
+</body>
+</html>

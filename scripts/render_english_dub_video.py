@@ -42,7 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text-color", default="#FFFFFF", help="英文字幕文字颜色，格式为 #RRGGBB")
     parser.add_argument("--background-color", default="#101010", help="英文字幕背景颜色，格式为 #RRGGBB")
     parser.add_argument("--background-opacity", type=float, default=1.0, help="字幕背景不透明度，范围 0 至 1")
-    parser.add_argument("--bottom-margin", type=int, default=148, help="英文 ASS 下边距，用于在中文字幕上方留出清晰行距")
+    parser.add_argument("--position-x", type=float, default=50.0, help="字幕中心横向位置百分比")
+    parser.add_argument("--position-y", type=float, default=84.0, help="字幕中心纵向位置百分比")
     parser.add_argument("--crf", type=int, default=18, help="libx264 CRF 质量参数")
     parser.add_argument("--preset", default="medium", help="libx264 preset")
     parser.add_argument("--preview-only", action="store_true", help="仅生成带字幕样式的参考帧，不编码完整视频")
@@ -130,8 +131,13 @@ def write_ass(
     text_color: str,
     background_color: str,
     background_opacity: float,
-    bottom_margin: int,
+    position_x: float,
+    position_y: float,
 ) -> None:
+    if not 0.0 <= position_x <= 100.0 or not 0.0 <= position_y <= 100.0:
+        raise ValueError("字幕位置百分比必须在 0 至 100 之间。")
+    position_x_pixels = round(1920 * position_x / 100)
+    position_y_pixels = round(1080 * position_y / 100)
     primary_colour = ass_color(text_color)
     back_colour = ass_color(background_color, background_opacity)
     header = f"""[Script Info]
@@ -144,7 +150,7 @@ YCbCr Matrix: TV.709
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: EnglishAboveChinese,{font_name},{font_size},{primary_colour},{primary_colour},{back_colour},{back_colour},-1,0,0,0,100,100,0.2,0,3,2.4,0,2,100,100,{bottom_margin},1
+Style: EnglishAboveChinese,{font_name},{font_size},{primary_colour},{primary_colour},{back_colour},{back_colour},-1,0,0,0,100,100,0.2,0,3,2.4,0,5,100,100,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -155,7 +161,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             output.write(
                 "Dialogue: 0,"
                 f"{ass_time(cue.start_ms)},{ass_time(cue.end_ms)},"
-                f"EnglishAboveChinese,,0,0,0,,{ass_escape(cue.text)}\n"
+                "EnglishAboveChinese,,0,0,0,,"
+                rf"{{\an5\pos({position_x_pixels},{position_y_pixels})}}"
+                f"{ass_escape(cue.text)}\n"
             )
 
 
@@ -209,37 +217,30 @@ def run_ffmpeg(
     subprocess.run(command, cwd=ass_path.parent, check=True)
 
 
-def write_reference_frames(ffmpeg: str, video: Path, ass_path: Path, output_dir: Path, cues: list[SubtitleCue]) -> list[Path]:
+def write_reference_frames(ffmpeg: str, video: Path, output_dir: Path, cues: list[SubtitleCue]) -> list[Path]:
     preview_dir = output_dir / "字幕样式参考帧"
     preview_dir.mkdir(parents=True, exist_ok=True)
-    sample_indices = sorted({0, len(cues) // 2, len(cues) - 1})
-    ass_filter_name = ass_path.name.replace("\\", r"\\").replace("'", r"\'").replace(":", r"\:")
-    outputs: list[Path] = []
-    for position, cue_index in enumerate(sample_indices, start=1):
-        cue = cues[cue_index]
-        timestamp = max(0.0, (cue.start_ms + cue.end_ms) / 2000)
-        output_path = preview_dir / f"参考帧_{position:02d}.jpg"
-        command = [
-            ffmpeg,
-            "-hide_banner",
-            "-y",
-            "-i",
-            str(video),
-            "-vf",
-            f"ass=filename='{ass_filter_name}'",
-            "-ss",
-            f"{timestamp:.3f}",
-            "-frames:v",
-            "1",
-            "-update",
-            "1",
-            "-q:v",
-            "2",
-            str(output_path),
-        ]
-        subprocess.run(command, cwd=ass_path.parent, check=True)
-        outputs.append(output_path)
-    return outputs
+    cue = cues[len(cues) // 2]
+    timestamp = max(0.0, (cue.start_ms + cue.end_ms) / 2000)
+    output_path = preview_dir / "字幕编辑参考帧.jpg"
+    command = [
+        ffmpeg,
+        "-hide_banner",
+        "-y",
+        "-ss",
+        f"{timestamp:.3f}",
+        "-i",
+        str(video),
+        "-frames:v",
+        "1",
+        "-update",
+        "1",
+        "-q:v",
+        "2",
+        str(output_path),
+    ]
+    subprocess.run(command, cwd=output_dir, check=True)
+    return [output_path]
 
 
 def write_report(
@@ -326,10 +327,11 @@ def main() -> int:
         args.text_color,
         args.background_color,
         args.background_opacity,
-        args.bottom_margin,
+        args.position_x,
+        args.position_y,
     )
     print(f"成片用英文 ASS 已生成（位于中文字幕上方并保留行距）：{ass_path}", flush=True)
-    preview_paths = write_reference_frames(ffmpeg, video, ass_path, output_dir, cues)
+    preview_paths = write_reference_frames(ffmpeg, video, output_dir, cues)
     for preview_path in preview_paths:
         print(f"字幕样式参考帧：{preview_path}", flush=True)
     if args.preview_only:

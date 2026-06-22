@@ -22,6 +22,14 @@ import {
 } from "lucide-react";
 import { artifactDisplayName } from "./path-display.js";
 import {
+  clampSubtitleFontSize,
+  clampSubtitlePosition,
+  fontSizeFromResize,
+  subtitlePositionFromDrag,
+  subtitlePositionStyle,
+} from "./final-video-style.js";
+import {
+  buildSimplifiedWorkflowOverview,
   hasAutomaticWorkflowProgress,
   nextAutomaticActions,
   summarizeAutomaticWorkflow,
@@ -35,7 +43,8 @@ const defaultFinalVideoStyle = {
   textColor: "#FFFFFF",
   backgroundColor: "#101010",
   backgroundOpacity: 1,
-  bottomMargin: 148,
+  positionX: 50,
+  positionY: 84,
 };
 const workflowStageById = Object.fromEntries(
   workflowStageGroups.map((group) => [group.id, group]),
@@ -85,8 +94,8 @@ ${geminiJsonPath}
 10. dubbing_groups 必须完整覆盖所有 display_subtitles，每条显示字幕只能出现一次。
 11. dubbing_groups 的 start 取第一条字幕开始时间，end 取最后一条字幕结束时间；后续会按这个整句时间窗切割原始 DX 对白轨作为参考音色。
 12. dubbing_groups 的 text 要适合 TTS 一次性朗读，可在不改变意思的前提下合并标点和轻微润色。
-13. 对“哈哈哈、呵呵、大笑、冷笑、哭声、抽泣、喘息、喘气、尖叫、咳嗽、叹气”等非语言人声，不要翻译成可朗读对白，也不要写成 ha ha ha 给 TTS 朗读；这类条目的 segment_type 必须写 preserve_original，text 可写简短英文显示标签，例如 [laughs]、[crying]、[breathing]。
-14. 普通可朗读对白的 segment_type 必须写 tts。若一个 dubbing_group 内包含非语言人声并且没有实质台词，该 group 的 segment_type 必须是 preserve_original；如果非语言人声和实质台词混在一起，必须优先拆成相邻的 tts 与 preserve_original 两个 group。若原 SRT 时间窗无法拆分，同一句里可以保留 [laughs] 这类英文显示标签，但该 group 仍写 tts，后续只生成英文对白，不会整段叠加原轨，避免把中文对白带回成片。
+13. 对“哈哈哈、呵呵、大笑、冷笑、哭声、抽泣、喘息、喘气、尖叫、咳嗽、叹气”等非语言人声，不要翻译成可朗读对白，也不要写成 ha ha ha 给 TTS 朗读；这类条目的 segment_type 必须写 preserve_original。
+14. 普通可朗读对白的 segment_type 必须写 tts。若一个 dubbing_group 内包含非语言人声并且没有实质台词，该 group 的 segment_type 必须是 preserve_original；如果非语言人声和实质台词混在一起，必须优先拆成相邻的 tts 与 preserve_original 两个 group。
 
 JSON 格式：
 {
@@ -266,7 +275,7 @@ function VideoThumbnail({ video }) {
   );
 }
 
-function ProjectWorkflowOverview({ overview, nextDisabled, onRunNext, onStepSelect }) {
+function ProjectWorkflowOverview({ overview, nextDisabled, onRunNext, onStepSelect, selectedStepId }) {
   const nextAction = overview.nextAction;
   return (
     <section className="workflow-overview" aria-label="项目进度总览">
@@ -297,8 +306,11 @@ function ProjectWorkflowOverview({ overview, nextDisabled, onRunNext, onStepSele
       </div>
       <ol className="overview-steps">
         {overview.steps.map((step) => (
-          <li key={step.id} className={`overview-step ${step.state}`}>
-            <button type="button" onClick={() => onStepSelect(step.id)}>
+          <li
+            key={step.id}
+            className={`overview-step ${step.state} ${selectedStepId === (step.panelId || step.id) ? "active" : ""}`}
+          >
+            <button type="button" onClick={() => onStepSelect(step.panelId || step.id)}>
               <span className="overview-step-index">{String(step.index).padStart(2, "0")}</span>
               <span>
                 <strong>{step.title}</strong>
@@ -338,6 +350,237 @@ function CancelTaskButton({ visible, busy, onClick }) {
     >
       {busy ? "正在取消..." : "取消任务"}
     </button>
+  );
+}
+
+function SubtitlePreviewFigure({
+  preview,
+  previewVersion,
+  previewText,
+  style,
+  onStyleChange,
+}) {
+  const frameRef = useRef(null);
+  const imageRef = useRef(null);
+  const interactionRef = useRef(null);
+  const draftStyleRef = useRef(null);
+  const [interactionMode, setInteractionMode] = useState("");
+  const [draftStyle, setDraftStyle] = useState(null);
+  const [sourceWidth, setSourceWidth] = useState(1920);
+  const [displayWidth, setDisplayWidth] = useState(0);
+  const effectiveStyle = draftStyle || style;
+  const position = subtitlePositionStyle(
+    effectiveStyle.positionX,
+    effectiveStyle.positionY,
+  );
+  const previewScale = displayWidth > 0 && sourceWidth > 0 ? displayWidth / sourceWidth : 1;
+  const previewFontSize = Math.max(
+    8,
+    clampSubtitleFontSize(effectiveStyle.fontSize) * previewScale,
+  );
+  const backgroundAlpha = Math.round(
+    Math.min(1, Math.max(0, Number(effectiveStyle.backgroundOpacity))) * 255,
+  )
+    .toString(16)
+    .padStart(2, "0");
+
+  const updateImageMeasurements = useCallback(() => {
+    const image = imageRef.current;
+    if (!image) {
+      return;
+    }
+    setSourceWidth(image.naturalWidth || 1920);
+    setDisplayWidth(image.clientWidth);
+  }, []);
+
+  useEffect(() => {
+    const image = imageRef.current;
+    if (!image || typeof ResizeObserver === "undefined") {
+      return undefined;
+    }
+    const observer = new ResizeObserver(updateImageMeasurements);
+    observer.observe(image);
+    return () => observer.disconnect();
+  }, [updateImageMeasurements]);
+
+  const stopInteraction = useCallback((event) => {
+    if (!interactionRef.current) {
+      return;
+    }
+    interactionRef.current = null;
+    setInteractionMode("");
+    if (draftStyleRef.current) {
+      onStyleChange(draftStyleRef.current);
+    }
+    draftStyleRef.current = null;
+    setDraftStyle(null);
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch {
+      // Pointer capture can already be gone after cancellation.
+    }
+  }, [onStyleChange]);
+
+  const handlePointerDown = useCallback(
+    (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+      const frame = frameRef.current;
+      if (!frame) {
+        return;
+      }
+      event.preventDefault();
+      draftStyleRef.current = { ...style };
+      setDraftStyle({ ...style });
+      const resizeHandle = event.target.closest?.("[data-resize-handle]");
+      if (resizeHandle) {
+        const boxRect = event.currentTarget.getBoundingClientRect();
+        const centerX = boxRect.left + boxRect.width / 2;
+        const centerY = boxRect.top + boxRect.height / 2;
+        interactionRef.current = {
+          mode: "resize",
+          centerX,
+          centerY,
+          startDistance: Math.hypot(event.clientX - centerX, event.clientY - centerY),
+          startFontSize: style.fontSize,
+        };
+        setInteractionMode("resize");
+      } else {
+        interactionRef.current = {
+          mode: "drag",
+          startPosition: {
+            positionX: style.positionX,
+            positionY: style.positionY,
+          },
+          startPointer: {
+            clientX: event.clientX,
+            clientY: event.clientY,
+          },
+        };
+        setInteractionMode("drag");
+      }
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    },
+    [style.fontSize, style.positionX, style.positionY],
+  );
+
+  const handlePointerMove = useCallback(
+    (event) => {
+      const interaction = interactionRef.current;
+      const frame = frameRef.current;
+      if (!interaction || !frame) {
+        return;
+      }
+      event.preventDefault();
+      if (interaction.mode === "drag") {
+        const nextPosition = subtitlePositionFromDrag(
+          interaction.startPosition,
+          interaction.startPointer,
+          { clientX: event.clientX, clientY: event.clientY },
+          frame.getBoundingClientRect(),
+        );
+        const nextStyle = { ...(draftStyleRef.current || style), ...nextPosition };
+        draftStyleRef.current = nextStyle;
+        setDraftStyle(nextStyle);
+        return;
+      }
+      const currentDistance = Math.hypot(
+        event.clientX - interaction.centerX,
+        event.clientY - interaction.centerY,
+      );
+      const nextStyle = {
+        ...(draftStyleRef.current || style),
+        fontSize: fontSizeFromResize(
+          interaction.startFontSize,
+          interaction.startDistance,
+          currentDistance,
+        ),
+      };
+      draftStyleRef.current = nextStyle;
+      setDraftStyle(nextStyle);
+    },
+    [style],
+  );
+
+  const handleKeyDown = useCallback(
+    (event) => {
+      const step = event.shiftKey ? 2 : 0.5;
+      const positionChanges = {
+        ArrowLeft: { positionX: clampSubtitlePosition(style.positionX - step) },
+        ArrowRight: { positionX: clampSubtitlePosition(style.positionX + step) },
+        ArrowUp: { positionY: clampSubtitlePosition(style.positionY - step) },
+        ArrowDown: { positionY: clampSubtitlePosition(style.positionY + step) },
+      };
+      if (event.key in positionChanges) {
+        event.preventDefault();
+        onStyleChange(positionChanges[event.key]);
+        return;
+      }
+      if (event.key === "+" || event.key === "=" || event.key === "-") {
+        event.preventDefault();
+        onStyleChange({
+          fontSize: clampSubtitleFontSize(
+            style.fontSize + (event.key === "-" ? -2 : 2),
+          ),
+        });
+      }
+    },
+    [onStyleChange, style.fontSize, style.positionX, style.positionY],
+  );
+
+  return (
+    <figure className="subtitle-editor-preview">
+      <div
+        ref={frameRef}
+        className={`subtitle-preview-frame ${interactionMode ? "interacting" : ""}`}
+      >
+        <img
+          ref={imageRef}
+          alt="字幕位置编辑参考帧"
+          src={`${preview.url}?v=${previewVersion}`}
+          onLoad={updateImageMeasurements}
+        />
+        {interactionMode && (
+          <>
+            <span className="subtitle-canvas-guide vertical" style={{ left: position.left }} />
+            <span className="subtitle-canvas-guide horizontal" style={{ top: position.top }} />
+          </>
+        )}
+        <div
+          aria-label={`拖动字幕调整位置，拖动四角调整大小。当前位置横向 ${Math.round(effectiveStyle.positionX)}%，纵向 ${Math.round(effectiveStyle.positionY)}%，字号 ${effectiveStyle.fontSize}`}
+          className={`subtitle-edit-box ${interactionMode || ""}`}
+          role="button"
+          tabIndex="0"
+          title="拖动字幕移动；拖动四角调整大小"
+          style={{
+            ...position,
+            backgroundColor: `${effectiveStyle.backgroundColor}${backgroundAlpha}`,
+            color: effectiveStyle.textColor,
+            fontFamily: effectiveStyle.fontName,
+            fontSize: `${previewFontSize}px`,
+          }}
+          onKeyDown={handleKeyDown}
+          onPointerCancel={stopInteraction}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={stopInteraction}
+        >
+          <span className="subtitle-edit-text">{previewText}</span>
+          {["nw", "ne", "sw", "se"].map((handle) => (
+            <span
+              aria-hidden="true"
+              className={`subtitle-resize-handle ${handle}`}
+              data-resize-handle={handle}
+              key={handle}
+            />
+          ))}
+        </div>
+      </div>
+      <figcaption>
+        直接拖动字幕放置位置，拖动四角调整大小；最终视频会直接采用这里的参数。
+      </figcaption>
+    </figure>
   );
 }
 
@@ -641,6 +884,9 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   const [ocr, setOcr] = useState(null);
   const [speakers, setSpeakers] = useState(null);
   const [finalSubtitles, setFinalSubtitles] = useState(null);
+  const [translationStatus, setTranslationStatus] = useState(null);
+  const [downstreamEnglishDubbing, setDownstreamEnglishDubbing] = useState(null);
+  const [downstreamFinalVideo, setDownstreamFinalVideo] = useState(null);
   const [workflowError, setWorkflowError] = useState("");
   const [editorCues, setEditorCues] = useState([]);
   const [editorError, setEditorError] = useState("");
@@ -651,6 +897,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   const [currentTimeMs, setCurrentTimeMs] = useState(0);
   const [openPathError, setOpenPathError] = useState("");
   const [workflowStarted, setWorkflowStarted] = useState(false);
+  const [selectedPanel, setSelectedPanel] = useState("generateChinese");
 
   useEffect(() => {
     let active = true;
@@ -674,16 +921,30 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     if (!record) {
       return;
     }
-    const [nextSeparation, nextOcr, nextSpeakers, nextFinalSubtitles] = await Promise.all([
+    const [
+      nextSeparation,
+      nextOcr,
+      nextSpeakers,
+      nextFinalSubtitles,
+      nextTranslationStatus,
+      nextEnglishDubbing,
+      nextFinalVideo,
+    ] = await Promise.all([
       requestJson(`/api/videos/${record.id}/workflow/bs-roformer`),
       requestJson(`/api/videos/${record.id}/workflow/ocr-subtitles`),
       requestJson(`/api/videos/${record.id}/workflow/whisperx-speakers`),
       requestJson(`/api/videos/${record.id}/workflow/final-subtitles`),
+      requestJson(`/api/videos/${record.id}/workflow/subtitle-editor`),
+      requestJson(`/api/videos/${record.id}/workflow/english-dubbing-mix`),
+      requestJson(`/api/videos/${record.id}/workflow/final-video`),
     ]);
     setSeparation(nextSeparation);
     setOcr(nextOcr);
     setSpeakers(nextSpeakers);
     setFinalSubtitles(nextFinalSubtitles);
+    setTranslationStatus(nextTranslationStatus);
+    setDownstreamEnglishDubbing(nextEnglishDubbing);
+    setDownstreamFinalVideo(nextFinalVideo);
     if (hasAutomaticWorkflowProgress({
       separation: nextSeparation,
       ocr: nextOcr,
@@ -702,8 +963,12 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     setOcr(null);
     setSpeakers(null);
     setFinalSubtitles(null);
+    setTranslationStatus(null);
+    setDownstreamEnglishDubbing(null);
+    setDownstreamFinalVideo(null);
     setEditorCues([]);
     setWorkflowStarted(false);
+    setSelectedPanel("generateChinese");
     setWorkflowError("");
     setEditorError("");
     void refreshStatuses().catch((error) => setWorkflowError(error.message));
@@ -711,14 +976,35 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   }, [record, refreshStatuses]);
 
   useEffect(() => {
-    if (!record || !workflowStarted || finalSubtitles?.status === "completed") {
+    if (!record) {
       return undefined;
     }
+    const running = [
+      separation,
+      ocr,
+      speakers,
+      finalSubtitles,
+      downstreamEnglishDubbing,
+      downstreamFinalVideo,
+    ].some((task) => task?.status === "running");
     const interval = window.setInterval(() => {
       void refreshStatuses().catch((error) => setWorkflowError(error.message));
-    }, 1500);
-    return () => window.clearInterval(interval);
-  }, [record, workflowStarted, finalSubtitles?.status, refreshStatuses]);
+    }, running ? 1500 : 4000);
+    window.addEventListener("focus", refreshStatuses);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshStatuses);
+    };
+  }, [
+    record,
+    separation?.status,
+    ocr?.status,
+    speakers?.status,
+    finalSubtitles?.status,
+    downstreamEnglishDubbing?.status,
+    downstreamFinalVideo?.status,
+    refreshStatuses,
+  ]);
 
   const runAutomaticAction = useCallback(async (action) => {
     if (!record || inFlightActions.current.has(action)) {
@@ -803,8 +1089,15 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     void refreshStatuses().catch((error) => setWorkflowError(error.message));
   };
 
-  const updateCueText = (number, text) => {
-    setEditorCues((current) => current.map((cue) => (cue.number === number ? { ...cue, text } : cue)));
+  const regenerateChineseSubtitles = () => {
+    setWorkflowStarted(true);
+    void runAutomaticAction("finalSubtitles");
+  };
+
+  const updateCueField = (number, field, value) => {
+    setEditorCues((current) => current.map(
+      (cue) => (cue.number === number ? { ...cue, [field]: value } : cue),
+    ));
     setEditorMessage("");
   };
 
@@ -824,7 +1117,9 @@ function SimplifiedVideoPage({ videos, isLoading }) {
       const result = await requestJson(`/api/videos/${record.id}/workflow/chinese-subtitle-editor`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cues: editorCues.map(({ number, text }) => ({ number, text })) }),
+        body: JSON.stringify({
+          cues: editorCues.map(({ number, speaker, text }) => ({ number, speaker, text })),
+        }),
       });
       setEditorCues(result.cues || []);
       setEditorMessage("中文字幕已保存到最终 SRT。");
@@ -879,6 +1174,36 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   const displayedError = workflowError || [separation, ocr, speakers, finalSubtitles].find(
     (task) => task?.error,
   )?.error;
+  const simplifiedOverview = buildSimplifiedWorkflowOverview({
+    started: workflowStarted,
+    storageMode: record.storageMode,
+    separation,
+    ocr,
+    speakers,
+    finalSubtitles,
+    subtitleEditorComplete: translationStatus?.complete,
+    englishDubbing: downstreamEnglishDubbing,
+    finalVideo: downstreamFinalVideo,
+  });
+  const selectedOverviewStep = simplifiedOverview.steps.find((step) => step.id === selectedPanel);
+  const canStartChineseWorkflow =
+    record.storageMode === "reference" &&
+    Boolean(separation) &&
+    Boolean(ocr) &&
+    finalSubtitles?.status !== "running";
+  const simplifiedNextDisabled =
+    simplifiedOverview.nextAction?.id === "generateChinese" &&
+    !canStartChineseWorkflow;
+  const runSimplifiedOverviewNext = () => {
+    const actionId = simplifiedOverview.nextAction?.id;
+    if (!actionId) {
+      return;
+    }
+    setSelectedPanel(actionId);
+    if (actionId === "generateChinese" && finalSubtitles?.status !== "completed") {
+      setWorkflowStarted(true);
+    }
+  };
 
   return (
     <main className="detail-page simplified-detail-page">
@@ -891,98 +1216,168 @@ function SimplifiedVideoPage({ videos, isLoading }) {
             原视频：{sourceDisplayName}
           </p>
         </div>
-        <button className="secondary-button compact" disabled={isReplacingSource} type="button" onClick={replaceProjectSource}>
-          {isReplacingSource ? "等待选择..." : "重新选择原视频"}
-        </button>
       </header>
       {sourceReplaceMessage && <p className="copy-status">{sourceReplaceMessage}</p>}
 
-      <section className={`automatic-workflow-status ${workflowSummary.state}`} aria-label="自动字幕流程状态">
-        <div>
-          <p className="eyebrow">自动流程</p>
-          <h2>{workflowSummary.title}</h2>
-          <p>{workflowSummary.detail}</p>
-        </div>
-        <div className="automatic-progress" aria-label={`自动流程完成 ${workflowSummary.percent}%`}>
-          <span style={{ width: `${workflowSummary.percent}%` }} />
-        </div>
-        {!workflowStarted && finalSubtitles?.status !== "completed" && (
-          <button
-            className="primary-button compact"
-            disabled={record.storageMode !== "reference" || !separation || !ocr}
-            type="button"
-            onClick={() => setWorkflowStarted(true)}
-          >
-            开始生成中文字幕
-          </button>
-        )}
-        {(workflowSummary.state === "failed" || displayedError) && (
-          <button className="secondary-button compact" type="button" onClick={retryAutomaticWorkflow}>重试自动流程</button>
-        )}
-      </section>
-      {displayedError && <p className="workflow-error page-error">{displayedError}</p>}
-      {openPathError && <p className="workflow-error page-error">{openPathError}</p>}
+      <ProjectWorkflowOverview
+        overview={simplifiedOverview}
+        nextDisabled={simplifiedNextDisabled}
+        onRunNext={runSimplifiedOverviewNext}
+        onStepSelect={setSelectedPanel}
+        selectedStepId={selectedPanel}
+      />
 
-      {finalSubtitles?.outputs?.srt?.ready && (
-        <section className="subtitle-workbench" aria-label="最终中文字幕工作台">
-          <div className="video-review-panel">
-            <video
-              ref={videoRef}
-              className="review-video"
-              controls
-              preload="metadata"
-              src={`/api/videos/${record.id}/content`}
-              onTimeUpdate={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
-            >
-              当前环境不支持视频播放。
-            </video>
+      {selectedPanel === "generateChinese" && (
+        <section className={`generation-panel ${workflowSummary.state}`} aria-label="生成中文字幕阶段详情">
+          <div className="generation-panel-main">
+            <div className="generation-source">
+              <p className="eyebrow">输入视频</p>
+              <h2>{record.name}</h2>
+              <p className={`project-path ${record.sourcePath ? "" : "warning"}`} title={record.sourcePath || sourceDisplayName}>
+                {sourceDisplayName}
+              </p>
+            </div>
+            <div className="generation-status">
+              <p className="eyebrow">字幕文件</p>
+              <h3>{workflowSummary.title}</h3>
+              <p>{workflowSummary.detail}</p>
+              <div className="automatic-progress" aria-label={`自动流程完成 ${workflowSummary.percent}%`}>
+                <span style={{ width: `${workflowSummary.percent}%` }} />
+              </div>
+            </div>
+          </div>
+
+          {finalSubtitles?.outputs?.srt?.ready && (
             <FileResult
               artifactKey="finalSubtitles.srt"
-              label="最终成果"
+              label="最终字幕"
               file={finalSubtitles.outputs.srt}
               onOpen={openFinalSubtitle}
               readyText="已生成"
             />
-          </div>
+          )}
+          {displayedError && <p className="workflow-error page-error">{displayedError}</p>}
+          {openPathError && <p className="workflow-error page-error">{openPathError}</p>}
 
-          <section className="chinese-subtitle-editor" aria-label="最终中文字幕编辑器">
-            <div className="chinese-editor-heading">
-              <div>
-                <p className="eyebrow">边看边改</p>
-                <h2>更正最终中文字幕</h2>
-                <p>点击时间码可跳到对应画面，时间轴保持只读。</p>
-              </div>
-              <button className="primary-button" disabled={isSaving || editorCues.length === 0} type="button" onClick={saveChineseSubtitles}>
-                {isSaving ? "正在保存..." : "保存中文字幕"}
+          <div className="generation-actions">
+            <button className="secondary-button compact" disabled={isReplacingSource} type="button" onClick={replaceProjectSource}>
+              {isReplacingSource ? "等待选择..." : "更换原视频"}
+            </button>
+            {!workflowStarted && finalSubtitles?.status !== "completed" && (
+              <button
+                className="primary-button compact"
+                disabled={!canStartChineseWorkflow}
+                type="button"
+                onClick={() => setWorkflowStarted(true)}
+              >
+                开始生成中文字幕
               </button>
-            </div>
-            {editorError && <p className="workflow-error">{editorError}</p>}
-            {editorMessage && <p className="copy-status">{editorMessage}</p>}
-            {editorCues.length === 0 && !editorError && <p className="copy-status">正在读取最终中文字幕...</p>}
-            <div className="chinese-cue-list">
-              {editorCues.map((cue) => (
-                <article className={`chinese-cue-row ${activeCueNumber === cue.number ? "active" : ""}`} key={cue.number}>
-                  <button className="cue-time-button" type="button" onClick={() => seekToCue(cue)}>
-                    <strong>{String(cue.number).padStart(3, "0")}</strong>
-                    <span>{cue.start} - {cue.end}</span>
-                  </button>
-                  <textarea
-                    aria-label={`第 ${cue.number} 条中文字幕`}
-                    rows={2}
-                    value={cue.text}
-                    onChange={(event) => updateCueText(cue.number, event.target.value)}
-                  />
-                </article>
-              ))}
-            </div>
-          </section>
+            )}
+            {finalSubtitles?.outputs?.srt?.ready && (
+              <button
+                className="primary-button compact"
+                disabled={!finalSubtitles?.canRun || finalSubtitles?.status === "running"}
+                type="button"
+                onClick={regenerateChineseSubtitles}
+              >
+                {finalSubtitles?.status === "running" ? "正在重新生成..." : "重新生成字幕文件"}
+              </button>
+            )}
+            {(workflowSummary.state === "failed" || displayedError) && (
+              <button className="secondary-button compact" type="button" onClick={retryAutomaticWorkflow}>重试自动流程</button>
+            )}
+          </div>
         </section>
+      )}
+
+      {selectedPanel === "reviewChinese" && (
+        <section className="selected-workflow-panel" aria-label="校正中文字幕阶段详情">
+          <header className="selected-panel-heading">
+            <p className="eyebrow">当前阶段</p>
+            <h2>{selectedOverviewStep?.title || "校正中文字幕"}</h2>
+            <p>播放原视频，点击时间码跳转到画面位置，在本页面更正最终中文字幕文本。</p>
+          </header>
+          {openPathError && <p className="workflow-error page-error">{openPathError}</p>}
+          {!finalSubtitles?.outputs?.srt?.ready && (
+            <p className="copy-status">等待新步骤 1 生成最终中文字幕 SRT 后，可以在这里边播放边校正字幕。</p>
+          )}
+          {finalSubtitles?.outputs?.srt?.ready && (
+            <section className="subtitle-workbench" aria-label="最终中文字幕工作台">
+              <div className="video-review-panel">
+                <video
+                  ref={videoRef}
+                  className="review-video"
+                  controls
+                  preload="metadata"
+                  src={`/api/videos/${record.id}/content`}
+                  onTimeUpdate={(event) => setCurrentTimeMs(event.currentTarget.currentTime * 1000)}
+                >
+                  当前环境不支持视频播放。
+                </video>
+                <FileResult
+                  artifactKey="finalSubtitles.srt"
+                  label="最终成果"
+                  file={finalSubtitles.outputs.srt}
+                  onOpen={openFinalSubtitle}
+                  readyText="已生成"
+                />
+              </div>
+
+              <section className="chinese-subtitle-editor" aria-label="最终中文字幕编辑器">
+                <div className="chinese-editor-heading">
+                  <div>
+                    <p className="eyebrow">边看边改</p>
+                    <h2>更正最终中文字幕</h2>
+                    <p>点击时间码可跳到对应画面，时间轴保持只读。</p>
+                  </div>
+                  <button className="primary-button" disabled={isSaving || editorCues.length === 0} type="button" onClick={saveChineseSubtitles}>
+                    {isSaving ? "正在保存..." : "保存中文字幕"}
+                  </button>
+                </div>
+                {editorError && <p className="workflow-error">{editorError}</p>}
+                {editorMessage && <p className="copy-status">{editorMessage}</p>}
+                {editorCues.length === 0 && !editorError && <p className="copy-status">正在读取最终中文字幕...</p>}
+                <div className="chinese-cue-list">
+                  {editorCues.map((cue) => (
+                    <article className={`chinese-cue-row ${activeCueNumber === cue.number ? "active" : ""}`} key={cue.number}>
+                      <button className="cue-time-button" type="button" onClick={() => seekToCue(cue)}>
+                        <strong>{String(cue.number).padStart(3, "0")}</strong>
+                        <span>{cue.start} - {cue.end}</span>
+                      </button>
+                      <label className="cue-speaker-field">
+                        <span>Speaker</span>
+                        <input
+                          aria-label={`第 ${cue.number} 条说话人`}
+                          maxLength={200}
+                          placeholder="未标注"
+                          type="text"
+                          value={cue.speaker || ""}
+                          onChange={(event) => updateCueField(cue.number, "speaker", event.target.value)}
+                        />
+                      </label>
+                      <textarea
+                        aria-label={`第 ${cue.number} 条中文字幕`}
+                        rows={2}
+                        value={cue.text}
+                        onChange={(event) => updateCueField(cue.number, "text", event.target.value)}
+                      />
+                    </article>
+                  ))}
+                </div>
+              </section>
+            </section>
+          )}
+        </section>
+      )}
+
+      {selectedPanel && !["generateChinese", "reviewChinese"].includes(selectedPanel) && (
+        <VideoPage videos={videos} isLoading={isLoading} embedded visiblePanel={selectedPanel} />
       )}
     </main>
   );
 }
 
-function VideoPage({ videos, isLoading }) {
+function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null }) {
   const { videoId } = useParams();
   const [record, setRecord] = useState(null);
   const [notFound, setNotFound] = useState(false);
@@ -1179,7 +1574,7 @@ function VideoPage({ videos, isLoading }) {
     if (!record) {
       return undefined;
     }
-    void refreshFinalSubtitlesStatus().catch(() => {});
+    void refreshFinalSubtitlesStatus().catch(() => { });
     return undefined;
   }, [
     record,
@@ -1197,7 +1592,7 @@ function VideoPage({ videos, isLoading }) {
     }
     const refreshDelay = finalSubtitles?.status === "running" ? 1500 : 4000;
     const interval = window.setInterval(() => {
-      void refreshFinalSubtitlesStatus().catch(() => {});
+      void refreshFinalSubtitlesStatus().catch(() => { });
     }, refreshDelay);
     window.addEventListener("focus", refreshFinalSubtitlesStatus);
     return () => {
@@ -1388,11 +1783,11 @@ function VideoPage({ videos, isLoading }) {
     );
   const missingEnglishDubbingInputs = englishDubbing?.inputs
     ? [
-        !englishDubbing.inputs.chineseTimelineSrt?.ready && "最终中文字幕",
-        !englishDubbing.inputs.englishDraftSrt?.ready && "英文字幕译稿",
-        !englishDubbing.inputs.dialogue?.ready && "DX 对白轨",
-        !englishDubbing.inputs.background?.ready && "MX+FX 背景底轨",
-      ].filter(Boolean)
+      !englishDubbing.inputs.chineseTimelineSrt?.ready && "最终中文字幕",
+      !englishDubbing.inputs.englishDraftSrt?.ready && "英文字幕译稿",
+      !englishDubbing.inputs.dialogue?.ready && "DX 对白轨",
+      !englishDubbing.inputs.background?.ready && "MX+FX 背景底轨",
+    ].filter(Boolean)
     : [];
   const requestedRedubSegmentNumber = Number(redubSegmentNumber);
   const canStartSingleRedub =
@@ -1568,8 +1963,22 @@ function VideoPage({ videos, isLoading }) {
   };
 
   const updateFinalVideoStyle = (field, value) => {
-    setFinalVideoStyle((style) => ({ ...style, [field]: value }));
+    setFinalVideoStyle((style) => ({
+      ...style,
+      [field]:
+        field === "fontSize"
+          ? clampSubtitleFontSize(value)
+          : field === "positionX" || field === "positionY"
+            ? clampSubtitlePosition(value)
+            : value,
+    }));
   };
+  const updateFinalVideoStyleValues = useCallback((values) => {
+    setFinalVideoStyle((style) => ({
+      ...style,
+      ...values,
+    }));
+  }, []);
 
   const generateFinalVideoPreview = async () => {
     setIsGeneratingFinalVideoPreview(true);
@@ -1643,7 +2052,9 @@ function VideoPage({ videos, isLoading }) {
     return <Navigate to="/" replace />;
   }
   if (!record) {
-    return <main className="detail-page loading">正在加载视频项目...</main>;
+    return embedded
+      ? <section className="embedded-production-flow loading">正在加载完整制作流程...</section>
+      : <main className="detail-page loading">正在加载视频项目...</main>;
   }
   const sourceDisplayName = record.sourcePath
     ? artifactDisplayName({ path: record.sourcePath })
@@ -1714,864 +2125,908 @@ function VideoPage({ videos, isLoading }) {
     };
     handlers[actionId]?.();
   };
+  const embeddedPanelCopy = {
+    translation: {
+      title: "翻译校对",
+      detail: "基于最终中文字幕生成并校对英文显示字幕和配音分段建议。",
+    },
+    englishDubbing: {
+      title: "英文配音",
+      detail: "生成 VoxCPM 英文配音、混音，并支持单条重新配音。",
+    },
+    finalVideo: {
+      title: "导出成片",
+      detail: "确认英文字幕样式后，替换音轨并输出最终英文成片。",
+    },
+  }[visiblePanel] || {
+    title: "英文翻译、配音与成片",
+    detail: "中文字幕确认后，继续完成英文译稿、VoxCPM 配音混音和最终成片导出。",
+  };
+
+  const PageContainer = embedded ? "section" : "main";
 
   return (
-    <main className="detail-page">
-      <header className="detail-header">
-        <div>
-          <p className="eyebrow">视频项目</p>
-          <h1>{record.name}</h1>
-          <p className="file-meta">
-            {formatSize(record.size)} · {record.type || "视频文件"} ·
-            {record.storageMode === "reference" ? " 原路径引用" : " 旧版复制记录"}
-          </p>
-          <p
-            className={`project-path ${record.sourcePath ? "" : "warning"}`}
-            title={record.sourcePath || sourceDisplayName}
-          >
-            原视频：{sourceDisplayName}
-          </p>
-        </div>
-        <div className="detail-header-actions">
-          <span className={`phase-tag ${record.storageMode === "reference" ? "" : "warning"}`}>
-            {record.storageMode === "reference" ? "原路径已记录" : "待重新选择原视频"}
-          </span>
-          <button
-            className="secondary-button compact"
-            disabled={isReplacingSource}
-            type="button"
-            onClick={replaceProjectSource}
-          >
-            {isReplacingSource ? "等待选择..." : "重新选择原视频"}
-          </button>
-        </div>
-      </header>
-      {sourceReplaceMessage && <p className="copy-status">{sourceReplaceMessage}</p>}
-      <ProjectWorkflowOverview
-        overview={workflowOverview}
-        nextDisabled={Boolean(
-          workflowOverview.nextAction &&
-            overviewActionDisabledById[workflowOverview.nextAction.id],
-        )}
-        onRunNext={runOverviewNext}
-        onStepSelect={scrollToWorkflowStep}
-      />
+    <PageContainer
+      className={`detail-page ${embedded ? "embedded-production-flow" : ""}`}
+      aria-label={embedded ? "完整制作流程" : undefined}
+    >
+      {embedded ? (
+        <header className="embedded-production-heading">
+          <p className="eyebrow">当前阶段</p>
+          <h2>{embeddedPanelCopy.title}</h2>
+          <p>{embeddedPanelCopy.detail}</p>
+        </header>
+      ) : (
+        <>
+          <header className="detail-header">
+            <div>
+              <p className="eyebrow">视频项目</p>
+              <h1>{record.name}</h1>
+              <p className="file-meta">
+                {formatSize(record.size)} · {record.type || "视频文件"} ·
+                {record.storageMode === "reference" ? " 原路径引用" : " 旧版复制记录"}
+              </p>
+              <p
+                className={`project-path ${record.sourcePath ? "" : "warning"}`}
+                title={record.sourcePath || sourceDisplayName}
+              >
+                原视频：{sourceDisplayName}
+              </p>
+            </div>
+            <div className="detail-header-actions">
+              <span className={`phase-tag ${record.storageMode === "reference" ? "" : "warning"}`}>
+                {record.storageMode === "reference" ? "原路径已记录" : "待重新选择原视频"}
+              </span>
+              <button
+                className="secondary-button compact"
+                disabled={isReplacingSource}
+                type="button"
+                onClick={replaceProjectSource}
+              >
+                {isReplacingSource ? "等待选择..." : "重新选择原视频"}
+              </button>
+            </div>
+          </header>
+          {sourceReplaceMessage && <p className="copy-status">{sourceReplaceMessage}</p>}
+          <ProjectWorkflowOverview
+            overview={workflowOverview}
+            nextDisabled={Boolean(
+              workflowOverview.nextAction &&
+              overviewActionDisabledById[workflowOverview.nextAction.id],
+            )}
+            onRunNext={runOverviewNext}
+            onStepSelect={scrollToWorkflowStep}
+          />
+        </>
+      )}
       {openPathError && <p className="workflow-error page-error">{openPathError}</p>}
       <section className="project-content">
-        <WorkflowStageSection group={workflowStageById.assets}>
-          <div className="workflow-card" id="workflow-step-separation">
-          <p className="eyebrow">步骤 01</p>
-          <h2>BS-RoFormer 二轨分离</h2>
-          <p>从原视频生成 DX 对白轨与 MX+FX 背景轨，为后续字幕与配音阶段提供素材。</p>
-          <div className={`step-status ${separation?.status || "ready"}`}>
-            <strong>
-              {separation?.status === "running" && "正在处理"}
-              {separation?.status === "completed" && "已生成二轨"}
-              {separation?.status === "failed" && "处理失败"}
-              {separation?.status === "cancelled" && "已取消"}
-              {separation?.status === "unavailable" && "不可执行"}
-              {(!separation || separation.status === "ready") && "等待开始"}
-            </strong>
-            <small>
-              {separation?.status === "running" &&
-                "音轨分离正在后台执行，页面会自动刷新状态。"}
-              {separation?.status === "failed" &&
-                "上次处理失败，请查看下方错误信息后重新执行。"}
-              {separation?.status === "cancelled" && "任务已取消，可以重新执行。"}
-              {separation?.status === "unavailable" && "请先在页面顶部重新选择原视频。"}
-              {separation?.status !== "running" &&
-                separation?.status !== "failed" &&
-                separation?.status !== "cancelled" &&
-                separation?.status !== "unavailable" &&
-                "输出将写入原视频同级目录。"}
-            </small>
-          </div>
-          <DirectoryResult
-            artifactKey="bsRoformer.outputDirectory"
-            label="输出目录"
-            path={separation?.outputDirectory}
-            ready={separation?.outputDirectoryReady}
-            onOpen={openPath}
-          />
-          {separation?.outputs && (
-            <div className="track-results">
-              <FileResult artifactKey="bsRoformer.dialogue" label="DX 对白轨" file={separation.outputs.dialogue} onOpen={openPath} />
-              <FileResult artifactKey="bsRoformer.background" label="MX+FX 背景轨" file={separation.outputs.background} onOpen={openPath} />
-            </div>
-          )}
-          {separationError && <p className="workflow-error">{separationError}</p>}
-          {separation?.error && <p className="workflow-error">{separation.error}</p>}
-          <button
-            className="primary-button workflow-action"
-            disabled={
-              isStartingSeparation ||
-              separation?.status === "running" ||
-              sourceActionDisabled
-            }
-            type="button"
-            onClick={runSeparation}
-          >
-            {separation?.status === "running"
-              ? "处理中..."
-              : separation?.status === "completed"
-                ? "重新生成二轨"
-                : "开始二轨分离"}
-          </button>
-          <CancelTaskButton
-            busy={cancellingWorkflow === "bs-roformer"}
-            visible={separation?.status === "running"}
-            onClick={() =>
-              cancelWorkflow(
-                "bs-roformer",
-                "bs-roformer",
-                setSeparation,
-                setSeparationError,
-              )
-            }
-          />
-        </div>
-        <div className="workflow-card" id="workflow-step-ocr">
-          <p className="eyebrow">步骤 02</p>
-          <h2>GPU OCR + FunASR 标点恢复</h2>
-          <p>从视频画面的硬字幕提取中文字幕，并恢复标点，生成可用于后续处理的 OCR 字幕。</p>
-          <div className={`step-status ${ocr?.status || "ready"}`}>
-            <strong>
-              {ocr?.status === "running" &&
-                (ocr.stage === "punctuation" ? "正在恢复标点" : "正在提取字幕")}
-              {ocr?.status === "completed" && "OCR 字幕已生成"}
-              {ocr?.status === "failed" && "处理失败"}
-              {ocr?.status === "cancelled" && "已取消"}
-              {ocr?.status === "unavailable" && "不可执行"}
-              {(!ocr || ocr.status === "ready") && "等待开始"}
-            </strong>
-            <small>
-              {ocr?.status === "running" &&
-                (ocr.stage === "punctuation"
-                  ? "GPU OCR 已完成，正在执行 FunASR 标点恢复。"
-                  : "GPU OCR 正在读取画面字幕，页面会自动刷新状态。")}
-              {ocr?.status === "failed" &&
-                "上次处理失败，请查看下方错误信息后重新执行。"}
-              {ocr?.status === "cancelled" && "任务已取消，可以重新执行。"}
-              {ocr?.status === "unavailable" && "请先在页面顶部重新选择原视频。"}
-              {ocr?.status !== "running" &&
-                ocr?.status !== "failed" &&
-                ocr?.status !== "cancelled" &&
-                ocr?.status !== "unavailable" &&
-                "字幕结果将写入原视频同级目录。"}
-            </small>
-          </div>
-          <DirectoryResult
-            artifactKey="ocr.outputDirectory"
-            label="输出目录"
-            path={ocr?.outputDirectory}
-            ready={ocr?.outputDirectoryReady}
-            onOpen={openPath}
-          />
-          {ocr?.outputs && (
-            <div className="track-results">
-              <FileResult artifactKey="ocr.srt" label="OCR 字幕 SRT" file={ocr.outputs.srt} onOpen={openPath} />
-              <FileResult artifactKey="ocr.report" label="OCR 质量报告" file={ocr.outputs.report} onOpen={openPath} />
-            </div>
-          )}
-          {ocrError && <p className="workflow-error">{ocrError}</p>}
-          {ocr?.error && <p className="workflow-error">{ocr.error}</p>}
-          <button
-            className="primary-button workflow-action"
-            disabled={
-              isStartingOcr ||
-              ocr?.status === "running" ||
-              sourceActionDisabled
-            }
-            type="button"
-            onClick={runOcr}
-          >
-            {ocr?.status === "running"
-              ? "处理中..."
-              : ocr?.status === "completed"
-                ? "重新生成 OCR 字幕"
-                : "开始提取 OCR 字幕"}
-          </button>
-          <CancelTaskButton
-            busy={cancellingWorkflow === "ocr-subtitles"}
-            visible={ocr?.status === "running"}
-            onClick={() =>
-              cancelWorkflow(
-                "ocr-subtitles",
-                "ocr-subtitles",
-                setOcr,
-                setOcrError,
-              )
-            }
-          />
-        </div>
-        <div className="workflow-card" id="workflow-step-speakers">
-          <p className="eyebrow">步骤 03</p>
-          <h2>WhisperX 候选说话人</h2>
-          <p>读取 DX 对白轨进行中文转写、时间对齐和候选说话人区分，为字幕角色归属提供参考。</p>
-          <div className={`step-status ${speakers?.status || "blocked"}`}>
-            <strong>
-              {speakers?.status === "running" && "正在提取候选说话人"}
-              {speakers?.status === "completed" && "候选说话人字幕已生成"}
-              {speakers?.status === "failed" && "处理失败"}
-              {speakers?.status === "cancelled" && "已取消"}
-              {speakers?.status === "unavailable" && "不可执行"}
-              {(!speakers || speakers.status === "blocked") && "等待 DX 对白轨"}
-              {speakers?.status === "ready" && "可以开始"}
-            </strong>
-            <small>
-              {speakers?.status === "running"
-                ? "WhisperX 正在后台执行，页面会自动刷新状态。"
-                : speakers?.status === "cancelled"
-                  ? "任务已取消，可以重新执行。"
-                : speakers?.status === "failed"
-                  ? "WhisperX 上次执行失败，可以查看错误信息后重新执行。"
-                  : speakers?.canRun
-                    ? "已检测到 DX 对白轨，可以执行 WhisperX。"
-                    : "请先完成步骤 01，生成 DX 对白轨。"}
-            </small>
-          </div>
-          <div className="track-results input-results">
-            <FileResult
-              artifactKey="whisperx.input"
-              label="输入音轨"
-              file={{ path: speakers?.inputPath, ready: speakers?.canRun }}
-              onOpen={openPath}
-              readyText="已就绪"
-            />
-          </div>
-          <DirectoryResult
-            artifactKey="whisperx.outputDirectory"
-            label="输出目录"
-            path={speakers?.outputDirectory}
-            ready={speakers?.outputDirectoryReady}
-            onOpen={openPath}
-          />
-          {speakers?.outputs && (
-            <div className="track-results">
-              <FileResult artifactKey="whisperx.srt" label="Speaker_Diarization SRT" file={speakers.outputs.srt} onOpen={openPath} />
-              <FileResult artifactKey="whisperx.json" label="Speaker_Diarization JSON" file={speakers.outputs.json} onOpen={openPath} />
-            </div>
-          )}
-          {speakersError && <p className="workflow-error">{speakersError}</p>}
-          {speakers?.error && <p className="workflow-error">{speakers.error}</p>}
-          <button
-            className="primary-button workflow-action"
-            disabled={
-              isStartingSpeakers ||
-              speakers?.status === "running" ||
-              !speakers?.canRun ||
-              record.storageMode !== "reference"
-            }
-            type="button"
-            onClick={runSpeakers}
-          >
-            {speakers?.status === "running"
-              ? "处理中..."
-              : speakers?.status === "completed"
-                ? "重新生成候选说话人"
-                : "开始提取候选说话人"}
-          </button>
-          <CancelTaskButton
-            busy={cancellingWorkflow === "whisperx-speakers"}
-            visible={speakers?.status === "running"}
-            onClick={() =>
-              cancelWorkflow(
-                "whisperx-speakers",
-                "whisperx-speakers",
-                setSpeakers,
-                setSpeakersError,
-              )
-            }
-          />
-          </div>
-        </WorkflowStageSection>
-        <WorkflowStageSection group={workflowStageById.subtitles}>
-          <div className="workflow-card" id="workflow-step-finalSubtitles">
-          <p className="eyebrow">步骤 04</p>
-          <h2>合并最终中文字幕</h2>
-          <p>将 OCR 标点字幕作为正文，合并 WhisperX 候选说话人标记，生成完整中文字幕文件。</p>
-          <div className={`step-status ${finalSubtitles?.status || "blocked"}`}>
-            <strong>
-              {finalSubtitles?.status === "running" && "正在合并字幕"}
-              {finalSubtitles?.status === "completed" && "最终中文字幕已生成"}
-              {finalSubtitles?.status === "failed" && "合并失败"}
-              {finalSubtitles?.status === "cancelled" && "已取消"}
-              {finalSubtitles?.status === "unavailable" && "不可执行"}
-              {(!finalSubtitles || finalSubtitles.status === "blocked") && "等待合并输入"}
-              {finalSubtitles?.status === "ready" && "可以开始"}
-            </strong>
-            <small>
-              {finalSubtitles?.status === "running"
-                ? "正在将 OCR 字幕与候选说话人字幕合并。"
-                : finalSubtitles?.status === "cancelled"
-                  ? "任务已取消，可以重新执行。"
-                : finalSubtitles?.canRun
-                  ? "两项 SRT 输入文件已齐全，可以生成完整中文字幕。"
-                  : "需先生成 WhisperX SRT 与 OCR 标点修复 SRT。"}
-            </small>
-          </div>
-          {finalSubtitles?.inputs && (
-            <div className="track-results input-results">
-              <FileResult artifactKey="whisperx.srt" label="WhisperX SRT" file={finalSubtitles.inputs.speakerSrt} onOpen={openPath} readyText="已就绪" />
-              <FileResult artifactKey="ocr.srt" label="OCR 标点修复 SRT" file={finalSubtitles.inputs.ocrSrt} onOpen={openPath} readyText="已就绪" />
-            </div>
-          )}
-          <DirectoryResult
-            artifactKey="finalSubtitles.outputDirectory"
-            label="输出目录"
-            path={finalSubtitles?.outputDirectory}
-            ready={finalSubtitles?.outputDirectoryReady}
-            onOpen={openPath}
-          />
-          {finalSubtitles?.outputs && (
-            <div className="track-results">
-              <FileResult artifactKey="finalSubtitles.srt" label="最终中文字幕 SRT" file={finalSubtitles.outputs.srt} onOpen={openPath} />
-            </div>
-          )}
-          {finalSubtitlesError && <p className="workflow-error">{finalSubtitlesError}</p>}
-          {finalSubtitles?.error && <p className="workflow-error">{finalSubtitles.error}</p>}
-          <button
-            className="primary-button workflow-action"
-            disabled={
-              isStartingFinalSubtitles ||
-              finalSubtitles?.status === "running" ||
-              !finalSubtitles?.canRun ||
-              record.storageMode !== "reference"
-            }
-            type="button"
-            onClick={runFinalSubtitles}
-          >
-            {finalSubtitles?.status === "running"
-              ? "合并中..."
-              : finalSubtitles?.status === "completed"
-                ? "重新生成最终中文字幕"
-                : "生成最终中文字幕"}
-          </button>
-          <CancelTaskButton
-            busy={cancellingWorkflow === "final-subtitles"}
-            visible={finalSubtitles?.status === "running"}
-            onClick={() =>
-              cancelWorkflow(
-                "final-subtitles",
-                "final-subtitles",
-                setFinalSubtitles,
-                setFinalSubtitlesError,
-              )
-            }
-          />
-        </div>
-        <div className="workflow-card manual-step" id="workflow-step-translation">
-          <p className="eyebrow">步骤 05</p>
-          <h2>角色校对与英文翻译</h2>
-          <p>将最终中文字幕文件交给 Gemini 生成 JSON：逐条英文显示字幕和整句配音分段建议。读取后可校对角色与译文，配音阶段会按整句时间窗切割原始对白作为参考音色。</p>
-          <div className={`step-status ${canTranslate ? "ready" : "blocked"}`}>
-            <strong>{canTranslate ? "可以翻译与校对" : "等待最终中文字幕"}</strong>
-            <small>
-              {canTranslate
-                ? subtitleEditorComplete
-                  ? "英文译稿已解析，可继续校对并保存后进入英文配音。"
-                  : "复制提示词交给 Gemini 生成 JSON，再读取文件并校对。"
-                : "请先完成步骤 04，生成最终中文字幕 SRT。"}
-            </small>
-          </div>
-          {canTranslate && subtitleEditor?.canEdit && (
-            <>
-              <div className="subtitle-editor-summary">
-                <strong>{subtitleEditorCues.length} 条字幕</strong>
-                <span>已填写英文 {completedEnglishCount} 条</span>
-                <span>已跳过 {skippedEnglishCount} 条</span>
-                <span>时间码只读</span>
+        {!embedded && (
+          <WorkflowStageSection group={workflowStageById.assets}>
+            <div className="workflow-card" id="workflow-step-separation">
+              <p className="eyebrow">步骤 01</p>
+              <h2>BS-RoFormer 二轨分离</h2>
+              <p>从原视频生成 DX 对白轨与 MX+FX 背景轨，为后续字幕与配音阶段提供素材。</p>
+              <div className={`step-status ${separation?.status || "ready"}`}>
+                <strong>
+                  {separation?.status === "running" && "正在处理"}
+                  {separation?.status === "completed" && "已生成二轨"}
+                  {separation?.status === "failed" && "处理失败"}
+                  {separation?.status === "cancelled" && "已取消"}
+                  {separation?.status === "unavailable" && "不可执行"}
+                  {(!separation || separation.status === "ready") && "等待开始"}
+                </strong>
+                <small>
+                  {separation?.status === "running" &&
+                    "音轨分离正在后台执行，页面会自动刷新状态。"}
+                  {separation?.status === "failed" &&
+                    "上次处理失败，请查看下方错误信息后重新执行。"}
+                  {separation?.status === "cancelled" && "任务已取消，可以重新执行。"}
+                  {separation?.status === "unavailable" && "请先在页面顶部重新选择原视频。"}
+                  {separation?.status !== "running" &&
+                    separation?.status !== "failed" &&
+                    separation?.status !== "cancelled" &&
+                    separation?.status !== "unavailable" &&
+                    "输出将写入原视频同级目录。"}
+                </small>
               </div>
-              {pendingEnglishNumbers.length > 0 && (
-                <p className="subtitle-editor-missing">
-                  待处理英文：{pendingEnglishNumbers.join("、")}
-                </p>
-              )}
-              {skippedEnglishCount > 0 && (
-                <p className="subtitle-editor-skip-hint">
-                  留空条目会在保存时视为跳过，不会阻塞后续配音流程。
-                </p>
-              )}
-              {subtitleEditor.draftError && <p className="workflow-error">{subtitleEditor.draftError}</p>}
-              <section className="translation-assistant-panel" aria-label="Gemini 翻译提示词">
-                <div>
-                  <strong>Gemini 文件翻译提示词</strong>
-                  <p>
-                    提示词可编辑，要求 Gemini 读取中文字幕 SRT，并输出包含显示字幕与整句配音分段建议的 JSON。复制按钮会复制当前内容。
-                  </p>
-                </div>
-                <div className="translation-assistant-actions">
-                  <button className="secondary-button compact" type="button" onClick={copyTranslationPrompt}>
-                    复制当前提示词
-                  </button>
-                  <button className="secondary-button compact" type="button" onClick={resetTranslationPrompt}>
-                    恢复原始提示词
-                  </button>
-                  <button
-                    className="secondary-button compact"
-                    type="button"
-                    onClick={() => setTranslationPromptVisible((visible) => !visible)}
-                  >
-                    {translationPromptVisible ? "收起提示词" : "查看提示词"}
-                  </button>
-                </div>
-                {translationPromptVisible && (
-                  <textarea
-                    className="translation-prompt"
-                    rows={12}
-                    value={translationPrompt}
-                    onChange={(event) => setTranslationPromptText(event.target.value)}
-                  />
-                )}
-              </section>
-              <section className="translation-file-panel" aria-label="字幕文件交接">
-                <div className="track-results">
-                  <FileResult
-                    artifactKey="finalSubtitles.srt"
-                    label="Gemini 输入：最终中文字幕 SRT"
-                    file={finalSubtitles.outputs.srt}
-                    onOpen={openPath}
-                    readyText="已就绪"
-                  />
-                  <FileResult
-                    artifactKey="translation.geminiJson"
-                    label="Gemini 输出：翻译与整句分段 JSON"
-                    file={{
-                      path: finalSubtitles.translationTarget.jsonPath,
-                      ready: finalSubtitles.translationTarget.jsonReady,
-                    }}
-                    onOpen={openPath}
-                  />
-                </div>
-                <button
-                  className="secondary-button compact"
-                  disabled={isImportingTranslationSrt}
-                  type="button"
-                  onClick={importTranslationSrt}
-                >
-                  {isImportingTranslationSrt ? "正在读取..." : "读取 Gemini 输出"}
-                </button>
-              </section>
-              <div className="subtitle-editor-table" role="table" aria-label="字幕翻译与角色校对">
-                <div className="subtitle-editor-header" role="row">
-                  <span>时间 / 中文</span>
-                  <span>角色</span>
-                  <span>英文字幕</span>
-                </div>
-                {subtitleEditorCues.map((cue) => (
-                  <div className="subtitle-editor-row" role="row" key={cue.number}>
-                    <div className="subtitle-source">
-                      <strong>{String(cue.number).padStart(3, "0")} · {cue.start} - {cue.end}</strong>
-                      <p>{cue.chinese}</p>
-                    </div>
-                    <div className="subtitle-role-field">
-                      <input
-                        aria-label={`第 ${cue.number} 条角色`}
-                        type="text"
-                        value={cue.role}
-                        onChange={(event) => updateSubtitleCue(cue.number, "role", event.target.value)}
-                      />
-                      <button
-                        className="role-apply-button"
-                        type="button"
-                        onClick={() => applyRoleToMatchingCues(cue.number)}
-                      >
-                        应用到同角色
-                      </button>
-                    </div>
-                    <textarea
-                      aria-label={`第 ${cue.number} 条英文字幕`}
-                      rows={2}
-                      value={cue.english}
-                      onChange={(event) => updateSubtitleCue(cue.number, "english", event.target.value)}
-                    />
-                  </div>
-                ))}
-              </div>
-              {subtitleEditorError && <p className="workflow-error">{subtitleEditorError}</p>}
-              {subtitleEditorMessage && <p className="copy-status">{subtitleEditorMessage}</p>}
-              <div className="subtitle-editor-actions">
-                <FileResult
-                  artifactKey="translation.geminiJson"
-                  label="Gemini 翻译 JSON"
-                  file={{
-                    path: finalSubtitles.translationTarget.jsonPath,
-                    ready: finalSubtitles.translationTarget.jsonReady,
-                  }}
-                  onOpen={openPath}
-                />
-                <FileResult
-                  artifactKey="translation.englishDraftSrt"
-                  label="英文显示字幕 SRT"
-                  file={{
-                    path: finalSubtitles.translationTarget.srtPath,
-                    ready: finalSubtitles.translationTarget.srtReady,
-                  }}
-                  onOpen={openPath}
-                />
-                <button
-                  className="primary-button"
-                  disabled={isSavingSubtitleEditor || subtitleEditorCues.length === 0}
-                  type="button"
-                  onClick={saveSubtitleEdits}
-                >
-                  {isSavingSubtitleEditor
-                    ? "正在保存..."
-                    : subtitleEditorComplete
-                      ? "保存并完成英文字幕"
-                      : "保存编辑进度"}
-                </button>
-              </div>
-            </>
-          )}
-          {canTranslate && !subtitleEditor && !subtitleEditorError && (
-            <p className="copy-status">正在读取字幕编辑数据...</p>
-          )}
-          {subtitleEditorError && !subtitleEditor?.canEdit && (
-            <p className="workflow-error">{subtitleEditorError}</p>
-          )}
-          </div>
-        </WorkflowStageSection>
-        <WorkflowStageSection group={workflowStageById.dubbing}>
-          <div className="workflow-card manual-step" id="workflow-step-englishDubbing">
-          <p className="eyebrow">步骤 06</p>
-          <h2>VoxCPM 英文配音与混音</h2>
-          <p>先将英文译稿同步到主时间轴并预检，再使用 VoxCPM 仅更新受影响配音片段，最后与 MX+FX 背景底轨混音。</p>
-          <div className={`step-status ${englishDubbing?.status || "blocked"}`}>
-            <strong>
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "preflight" &&
-                "正在预检英文字幕"}
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "dubbing-groups" &&
-                "正在规划英文整句分段"}
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "segments" &&
-                "正在按整句分段切割 DX 对白轨"}
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "dubbing" &&
-                "正在使用 VoxCPM 生成英文配音"}
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "redubbing" &&
-                `正在重新配音第 ${String(englishDubbing.redubSegmentNumber || "").padStart(3, "0")} 段`}
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "mixing" &&
-                "正在合成英文混音"}
-              {englishDubbing?.status === "completed" && "英文成片混音已生成"}
-              {englishDubbing?.status === "failed" && "处理失败"}
-              {englishDubbing?.status === "cancelled" && "已取消"}
-              {englishDubbing?.status === "unavailable" && "不可执行"}
-              {(!englishDubbing || englishDubbing.status === "blocked") &&
-                (missingEnglishDubbingInputs.length > 0 ? "等待必要输入就绪" : "等待英文字幕与音轨")}
-              {englishDubbing?.status === "ready" && "可以开始"}
-            </strong>
-            <small>
-              {englishDubbing?.status === "running"
-                ? "任务包含字幕预检、分段切割、增量配音和整轨混音，页面会自动刷新状态。"
-                : englishDubbing?.status === "cancelled"
-                  ? "任务已取消，可以重新执行。已生成且未过期的片段会继续复用。"
-                : englishDubbing?.canRun
-                  ? englishDubbing?.mixOutdated
-                    ? "译稿或素材已变化，需要重新生成英文混音。"
-                    : "英文译稿、主时间轴与所需音轨已齐全，留空条目会自动跳过。"
-                  : missingEnglishDubbingInputs.length > 0
-                    ? `缺少：${missingEnglishDubbingInputs.join("、")}。留空条目会自动跳过。`
-                    : "需存在英文字幕译稿、最终中文字幕、DX 对白轨与 MX+FX 背景底轨。"}
-            </small>
-          </div>
-          <DubbingProgress progress={englishDubbing?.dubbingProgress} />
-          {englishDubbing?.inputs && (
-            <div className="track-results input-results">
-              <FileResult artifactKey="finalSubtitles.srt" label="最终中文字幕（主时间轴）" file={englishDubbing.inputs.chineseTimelineSrt} onOpen={openPath} readyText="已就绪" />
-              <FileResult artifactKey="translation.englishDraftSrt" label="英文字幕译稿" file={englishDubbing.inputs.englishDraftSrt} onOpen={openPath} readyText="已就绪" />
-              <FileResult artifactKey="bsRoformer.dialogue" label="DX 对白轨" file={englishDubbing.inputs.dialogue} onOpen={openPath} readyText="已就绪" />
-              <FileResult artifactKey="bsRoformer.background" label="MX+FX 背景底轨" file={englishDubbing.inputs.background} onOpen={openPath} readyText="已就绪" />
-            </div>
-          )}
-          <DirectoryResult
-            artifactKey="englishDubbing.workDirectory"
-            label="工作目录"
-            path={englishDubbing?.workDirectory}
-            ready={englishDubbing?.workDirectoryReady}
-            onOpen={openPath}
-          />
-          {englishDubbing?.outputs && (
-            <div className="track-results">
-              <FileResult artifactKey="translation.controlledEnglishSrt" label="受控英文字幕 SRT" file={englishDubbing.outputs.controlledEnglishSrt} onOpen={openPath} />
-              <FileResult artifactKey="translation.preflightReport" label="英文字幕预检报告" file={englishDubbing.outputs.preflightReport} onOpen={openPath} />
-              <FileResult artifactKey="englishDubbing.dubbingGroupsCsv" label="英文配音整句分段清单" file={englishDubbing.outputs.dubbingGroupsCsv} onOpen={openPath} />
-              <FileResult artifactKey="englishDubbing.dubbingGroupsReport" label="英文配音整句分段报告" file={englishDubbing.outputs.dubbingGroupsReport} onOpen={openPath} />
-              <FileResult artifactKey="englishDubbing.segmentManifest" label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
-              <FileResult artifactKey="englishDubbing.dialogueTrack" label="英文对白整轨" file={englishDubbing.outputs.dialogueTrack} onOpen={openPath} />
-              <FileResult artifactKey="englishDubbing.mixedTrack" label="英文成片混音 MX+FX" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
-              <FileResult artifactKey="englishDubbing.assemblyReport" label="英文整轨合成结果" file={englishDubbing.outputs.assemblyReport} onOpen={openPath} />
-            </div>
-          )}
-          {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
-          {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
-          <button
-            className="primary-button workflow-action"
-            disabled={
-              isStartingEnglishDubbing ||
-              englishDubbing?.status === "running" ||
-              !englishDubbing?.canRun ||
-              record.storageMode !== "reference"
-            }
-            type="button"
-            onClick={runEnglishDubbing}
-          >
-            {englishDubbing?.status === "running"
-              ? "处理中..."
-              : englishDubbing?.status === "completed"
-                ? "重新生成英文混音"
-                : "开始英文配音与混音"}
-          </button>
-          <CancelTaskButton
-            busy={cancellingWorkflow === "english-dubbing-mix"}
-            visible={englishDubbing?.status === "running"}
-            onClick={() =>
-              cancelWorkflow(
-                "english-dubbing-mix",
-                "english-dubbing-mix",
-                setEnglishDubbing,
-                setEnglishDubbingError,
-              )
-            }
-          />
-        </div>
-        <div className="workflow-card manual-step redub-step">
-          <p className="eyebrow">步骤 07</p>
-          <h2>单条重新配音</h2>
-          <p>输入英文配音分段清单中的编号，只重新生成这一条 VoxCPM 配音，并自动重新合成英文混音。</p>
-          <div className={`step-status ${englishDubbing?.canRedub ? "ready" : "blocked"}`}>
-            <strong>
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "redubbing" &&
-                `正在重新配音第 ${String(englishDubbing.redubSegmentNumber || "").padStart(3, "0")} 段`}
-              {englishDubbing?.status === "running" &&
-                englishDubbing.stage === "mixing" &&
-                "正在重新合成英文混音"}
-              {englishDubbing?.status !== "running" &&
-                englishDubbing?.canRedub &&
-                "可以单条重新配音"}
-              {englishDubbing?.status !== "running" &&
-                !englishDubbing?.canRedub &&
-                "等待完整英文混音"}
-            </strong>
-            <small>
-              {englishDubbing?.status === "running"
-                ? "单条重配音任务完成后，英文混音会自动更新，最终成片需在步骤 08 重新生成。"
-                : englishDubbing?.canRedub
-                  ? "编号来自步骤 06 的“英文配音分段清单”或 VoxCPM 试听报告。"
-                  : "请先完成步骤 06，且当前英文混音不能处于过期状态。"}
-            </small>
-          </div>
-          <section className="single-redub-panel" aria-label="单条重新配音">
-            <label className="single-redub-field">
-              <span>配音分段编号</span>
-              <input
-                min="1"
-                placeholder="例如 12"
-                type="number"
-                value={redubSegmentNumber}
-                onChange={(event) => setRedubSegmentNumber(event.target.value)}
+              <DirectoryResult
+                artifactKey="bsRoformer.outputDirectory"
+                label="输出目录"
+                path={separation?.outputDirectory}
+                ready={separation?.outputDirectoryReady}
+                onOpen={openPath}
               />
-            </label>
-            <button
-              className="primary-button single-redub-action"
-              disabled={isStartingSingleRedub || !canStartSingleRedub}
-              type="button"
-              onClick={runSingleEnglishDubbingRedub}
-            >
-              {isStartingSingleRedub ? "正在启动..." : "重新配音这一条"}
-            </button>
-          </section>
-          {englishDubbing?.outputs && (
-            <div className="track-results">
-              <FileResult artifactKey="englishDubbing.segmentManifest" label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
-              <FileResult artifactKey="englishDubbing.dubbingReport" label="VoxCPM 试听报告" file={englishDubbing.outputs.dubbingReport} onOpen={openPath} />
-              <FileResult artifactKey="englishDubbing.mixedTrack" label="更新后的英文混音" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
+              {separation?.outputs && (
+                <div className="track-results">
+                  <FileResult artifactKey="bsRoformer.dialogue" label="DX 对白轨" file={separation.outputs.dialogue} onOpen={openPath} />
+                  <FileResult artifactKey="bsRoformer.background" label="MX+FX 背景轨" file={separation.outputs.background} onOpen={openPath} />
+                </div>
+              )}
+              {separationError && <p className="workflow-error">{separationError}</p>}
+              {separation?.error && <p className="workflow-error">{separation.error}</p>}
+              <button
+                className="primary-button workflow-action"
+                disabled={
+                  isStartingSeparation ||
+                  separation?.status === "running" ||
+                  sourceActionDisabled
+                }
+                type="button"
+                onClick={runSeparation}
+              >
+                {separation?.status === "running"
+                  ? "处理中..."
+                  : separation?.status === "completed"
+                    ? "重新生成二轨"
+                    : "开始二轨分离"}
+              </button>
+              <CancelTaskButton
+                busy={cancellingWorkflow === "bs-roformer"}
+                visible={separation?.status === "running"}
+                onClick={() =>
+                  cancelWorkflow(
+                    "bs-roformer",
+                    "bs-roformer",
+                    setSeparation,
+                    setSeparationError,
+                  )
+                }
+              />
             </div>
-          )}
-          {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
-          {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
-          </div>
-        </WorkflowStageSection>
-        <WorkflowStageSection group={workflowStageById.delivery}>
-          <div className="workflow-card manual-step final-video-step" id="workflow-step-finalVideo">
-          <p className="eyebrow">步骤 08</p>
-          <h2>替换英文音轨并烧录字幕</h2>
-          <p>用英文成片混音替换原视频音频，并将受控英文字幕按所选样式烧录到视频中，输出最终英文成片。</p>
-          <div className={`step-status ${finalVideo?.status || "blocked"}`}>
-            <strong>
-              {finalVideo?.status === "running" && "正在生成最终成片"}
-              {finalVideo?.status === "completed" && "最终英文成片已生成"}
-              {finalVideo?.status === "failed" && "成片生成失败"}
-              {finalVideo?.status === "cancelled" && "已取消"}
-              {finalVideo?.status === "unavailable" && "不可执行"}
-              {(!finalVideo || finalVideo.status === "blocked") && "等待英文混音与字幕"}
-              {finalVideo?.status === "ready" && "可以开始"}
-            </strong>
-            <small>
-              {finalVideo?.status === "running"
-                ? "正在编码视频、烧录字幕并替换音频，页面会自动刷新状态。"
-                : finalVideo?.status === "cancelled"
-                  ? "任务已取消，可以按当前样式重新生成。"
-                : finalVideo?.status === "failed"
-                  ? "最终成片上次生成失败，可以查看错误信息后重新生成。"
-                  : finalVideo?.canRun
-                    ? "受控英文字幕与英文成片混音已齐全，可先生成参考帧确认样式。"
-                    : "需先完成步骤 06/07 的字幕预检与英文成片混音。"}
-            </small>
-          </div>
-          {finalVideo?.inputs && (
-            <div className="track-results input-results final-input-results">
-              <FileResult artifactKey="source.video" label="原视频画面" file={finalVideo.inputs.video} onOpen={openPath} readyText="已就绪" />
-              <FileResult artifactKey="translation.controlledEnglishSrt" label="受控英文字幕 SRT" file={finalVideo.inputs.subtitle} onOpen={openPath} readyText="已就绪" />
-              <FileResult artifactKey="englishDubbing.mixedTrack" label="替换音轨：英文成片混音" file={finalVideo.inputs.audio} onOpen={openPath} readyText="已就绪" />
+            <div className="workflow-card" id="workflow-step-ocr">
+              <p className="eyebrow">步骤 02</p>
+              <h2>GPU OCR + FunASR 标点恢复</h2>
+              <p>从视频画面的硬字幕提取中文字幕，并恢复标点，生成可用于后续处理的 OCR 字幕。</p>
+              <div className={`step-status ${ocr?.status || "ready"}`}>
+                <strong>
+                  {ocr?.status === "running" &&
+                    (ocr.stage === "punctuation" ? "正在恢复标点" : "正在提取字幕")}
+                  {ocr?.status === "completed" && "OCR 字幕已生成"}
+                  {ocr?.status === "failed" && "处理失败"}
+                  {ocr?.status === "cancelled" && "已取消"}
+                  {ocr?.status === "unavailable" && "不可执行"}
+                  {(!ocr || ocr.status === "ready") && "等待开始"}
+                </strong>
+                <small>
+                  {ocr?.status === "running" &&
+                    (ocr.stage === "punctuation"
+                      ? "GPU OCR 已完成，正在执行 FunASR 标点恢复。"
+                      : "GPU OCR 正在读取画面字幕，页面会自动刷新状态。")}
+                  {ocr?.status === "failed" &&
+                    "上次处理失败，请查看下方错误信息后重新执行。"}
+                  {ocr?.status === "cancelled" && "任务已取消，可以重新执行。"}
+                  {ocr?.status === "unavailable" && "请先在页面顶部重新选择原视频。"}
+                  {ocr?.status !== "running" &&
+                    ocr?.status !== "failed" &&
+                    ocr?.status !== "cancelled" &&
+                    ocr?.status !== "unavailable" &&
+                    "字幕结果将写入原视频同级目录。"}
+                </small>
+              </div>
+              <DirectoryResult
+                artifactKey="ocr.outputDirectory"
+                label="输出目录"
+                path={ocr?.outputDirectory}
+                ready={ocr?.outputDirectoryReady}
+                onOpen={openPath}
+              />
+              {ocr?.outputs && (
+                <div className="track-results">
+                  <FileResult artifactKey="ocr.srt" label="OCR 字幕 SRT" file={ocr.outputs.srt} onOpen={openPath} />
+                  <FileResult artifactKey="ocr.report" label="OCR 质量报告" file={ocr.outputs.report} onOpen={openPath} />
+                </div>
+              )}
+              {ocrError && <p className="workflow-error">{ocrError}</p>}
+              {ocr?.error && <p className="workflow-error">{ocr.error}</p>}
+              <button
+                className="primary-button workflow-action"
+                disabled={
+                  isStartingOcr ||
+                  ocr?.status === "running" ||
+                  sourceActionDisabled
+                }
+                type="button"
+                onClick={runOcr}
+              >
+                {ocr?.status === "running"
+                  ? "处理中..."
+                  : ocr?.status === "completed"
+                    ? "重新生成 OCR 字幕"
+                    : "开始提取 OCR 字幕"}
+              </button>
+              <CancelTaskButton
+                busy={cancellingWorkflow === "ocr-subtitles"}
+                visible={ocr?.status === "running"}
+                onClick={() =>
+                  cancelWorkflow(
+                    "ocr-subtitles",
+                    "ocr-subtitles",
+                    setOcr,
+                    setOcrError,
+                  )
+                }
+              />
             </div>
-          )}
-          <section className="subtitle-style-panel" aria-label="英文字幕样式设置">
-            <div className="style-panel-heading">
-              <strong>字幕样式</strong>
-              <small>先生成三帧参考画面，确认后再编码完整视频。</small>
+            <div className="workflow-card" id="workflow-step-speakers">
+              <p className="eyebrow">步骤 03</p>
+              <h2>WhisperX 候选说话人</h2>
+              <p>读取 DX 对白轨进行中文转写、时间对齐和候选说话人区分，为字幕角色归属提供参考。</p>
+              <div className={`step-status ${speakers?.status || "blocked"}`}>
+                <strong>
+                  {speakers?.status === "running" && "正在提取候选说话人"}
+                  {speakers?.status === "completed" && "候选说话人字幕已生成"}
+                  {speakers?.status === "failed" && "处理失败"}
+                  {speakers?.status === "cancelled" && "已取消"}
+                  {speakers?.status === "unavailable" && "不可执行"}
+                  {(!speakers || speakers.status === "blocked") && "等待 DX 对白轨"}
+                  {speakers?.status === "ready" && "可以开始"}
+                </strong>
+                <small>
+                  {speakers?.status === "running"
+                    ? "WhisperX 正在后台执行，页面会自动刷新状态。"
+                    : speakers?.status === "cancelled"
+                      ? "任务已取消，可以重新执行。"
+                      : speakers?.status === "failed"
+                        ? "WhisperX 上次执行失败，可以查看错误信息后重新执行。"
+                        : speakers?.canRun
+                          ? "已检测到 DX 对白轨，可以执行 WhisperX。"
+                          : "请先完成步骤 01，生成 DX 对白轨。"}
+                </small>
+              </div>
+              <div className="track-results input-results">
+                <FileResult
+                  artifactKey="whisperx.input"
+                  label="输入音轨"
+                  file={{ path: speakers?.inputPath, ready: speakers?.canRun }}
+                  onOpen={openPath}
+                  readyText="已就绪"
+                />
+              </div>
+              <DirectoryResult
+                artifactKey="whisperx.outputDirectory"
+                label="输出目录"
+                path={speakers?.outputDirectory}
+                ready={speakers?.outputDirectoryReady}
+                onOpen={openPath}
+              />
+              {speakers?.outputs && (
+                <div className="track-results">
+                  <FileResult artifactKey="whisperx.srt" label="Speaker_Diarization SRT" file={speakers.outputs.srt} onOpen={openPath} />
+                  <FileResult artifactKey="whisperx.json" label="Speaker_Diarization JSON" file={speakers.outputs.json} onOpen={openPath} />
+                </div>
+              )}
+              {speakersError && <p className="workflow-error">{speakersError}</p>}
+              {speakers?.error && <p className="workflow-error">{speakers.error}</p>}
+              <button
+                className="primary-button workflow-action"
+                disabled={
+                  isStartingSpeakers ||
+                  speakers?.status === "running" ||
+                  !speakers?.canRun ||
+                  record.storageMode !== "reference"
+                }
+                type="button"
+                onClick={runSpeakers}
+              >
+                {speakers?.status === "running"
+                  ? "处理中..."
+                  : speakers?.status === "completed"
+                    ? "重新生成候选说话人"
+                    : "开始提取候选说话人"}
+              </button>
+              <CancelTaskButton
+                busy={cancellingWorkflow === "whisperx-speakers"}
+                visible={speakers?.status === "running"}
+                onClick={() =>
+                  cancelWorkflow(
+                    "whisperx-speakers",
+                    "whisperx-speakers",
+                    setSpeakers,
+                    setSpeakersError,
+                  )
+                }
+              />
             </div>
-            <div className="style-controls">
-              <label className="style-field font-field">
-                <span>字体</span>
-                <input
-                  type="text"
-                  value={finalVideoStyle.fontName}
-                  onChange={(event) => updateFinalVideoStyle("fontName", event.target.value)}
+          </WorkflowStageSection>
+        )}
+        {(!embedded || visiblePanel === "translation") && (
+          <WorkflowStageSection group={workflowStageById.subtitles}>
+            {!embedded && (
+              <div className="workflow-card" id="workflow-step-finalSubtitles">
+                <p className="eyebrow">步骤 04</p>
+                <h2>合并最终中文字幕</h2>
+                <p>将 OCR 标点字幕作为正文，合并 WhisperX 候选说话人标记，生成完整中文字幕文件。</p>
+                <div className={`step-status ${finalSubtitles?.status || "blocked"}`}>
+                  <strong>
+                    {finalSubtitles?.status === "running" && "正在合并字幕"}
+                    {finalSubtitles?.status === "completed" && "最终中文字幕已生成"}
+                    {finalSubtitles?.status === "failed" && "合并失败"}
+                    {finalSubtitles?.status === "cancelled" && "已取消"}
+                    {finalSubtitles?.status === "unavailable" && "不可执行"}
+                    {(!finalSubtitles || finalSubtitles.status === "blocked") && "等待合并输入"}
+                    {finalSubtitles?.status === "ready" && "可以开始"}
+                  </strong>
+                  <small>
+                    {finalSubtitles?.status === "running"
+                      ? "正在将 OCR 字幕与候选说话人字幕合并。"
+                      : finalSubtitles?.status === "cancelled"
+                        ? "任务已取消，可以重新执行。"
+                        : finalSubtitles?.canRun
+                          ? "两项 SRT 输入文件已齐全，可以生成完整中文字幕。"
+                          : "需先生成 WhisperX SRT 与 OCR 标点修复 SRT。"}
+                  </small>
+                </div>
+                {finalSubtitles?.inputs && (
+                  <div className="track-results input-results">
+                    <FileResult artifactKey="whisperx.srt" label="WhisperX SRT" file={finalSubtitles.inputs.speakerSrt} onOpen={openPath} readyText="已就绪" />
+                    <FileResult artifactKey="ocr.srt" label="OCR 标点修复 SRT" file={finalSubtitles.inputs.ocrSrt} onOpen={openPath} readyText="已就绪" />
+                  </div>
+                )}
+                <DirectoryResult
+                  artifactKey="finalSubtitles.outputDirectory"
+                  label="输出目录"
+                  path={finalSubtitles?.outputDirectory}
+                  ready={finalSubtitles?.outputDirectoryReady}
+                  onOpen={openPath}
                 />
-              </label>
-              <label className="style-field">
-                <span>字体大小</span>
-                <input
-                  min="18"
-                  max="96"
-                  type="number"
-                  value={finalVideoStyle.fontSize}
-                  onChange={(event) => updateFinalVideoStyle("fontSize", Number(event.target.value))}
-                />
-              </label>
-              <label className="style-field color-field">
-                <span>字幕颜色</span>
-                <input
-                  type="color"
-                  value={finalVideoStyle.textColor}
-                  onChange={(event) => updateFinalVideoStyle("textColor", event.target.value)}
-                />
-                <code>{finalVideoStyle.textColor}</code>
-              </label>
-              <label className="style-field color-field">
-                <span>背景颜色</span>
-                <input
-                  type="color"
-                  value={finalVideoStyle.backgroundColor}
-                  onChange={(event) => updateFinalVideoStyle("backgroundColor", event.target.value)}
-                />
-                <code>{finalVideoStyle.backgroundColor}</code>
-              </label>
-              <label className="style-field range-field">
-                <span>背景不透明度 <strong>{Math.round(finalVideoStyle.backgroundOpacity * 100)}%</strong></span>
-                <input
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  type="range"
-                  value={finalVideoStyle.backgroundOpacity}
-                  onChange={(event) =>
-                    updateFinalVideoStyle("backgroundOpacity", Number(event.target.value))
+                {finalSubtitles?.outputs && (
+                  <div className="track-results">
+                    <FileResult artifactKey="finalSubtitles.srt" label="最终中文字幕 SRT" file={finalSubtitles.outputs.srt} onOpen={openPath} />
+                  </div>
+                )}
+                {finalSubtitlesError && <p className="workflow-error">{finalSubtitlesError}</p>}
+                {finalSubtitles?.error && <p className="workflow-error">{finalSubtitles.error}</p>}
+                <button
+                  className="primary-button workflow-action"
+                  disabled={
+                    isStartingFinalSubtitles ||
+                    finalSubtitles?.status === "running" ||
+                    !finalSubtitles?.canRun ||
+                    record.storageMode !== "reference"
+                  }
+                  type="button"
+                  onClick={runFinalSubtitles}
+                >
+                  {finalSubtitles?.status === "running"
+                    ? "合并中..."
+                    : finalSubtitles?.status === "completed"
+                      ? "重新生成最终中文字幕"
+                      : "生成最终中文字幕"}
+                </button>
+                <CancelTaskButton
+                  busy={cancellingWorkflow === "final-subtitles"}
+                  visible={finalSubtitles?.status === "running"}
+                  onClick={() =>
+                    cancelWorkflow(
+                      "final-subtitles",
+                      "final-subtitles",
+                      setFinalSubtitles,
+                      setFinalSubtitlesError,
+                    )
                   }
                 />
-              </label>
-              <label className="style-field range-field">
-                <span>底部距离 <strong>{finalVideoStyle.bottomMargin}px</strong></span>
-                <input
-                  min="20"
-                  max="500"
-                  type="range"
-                  value={finalVideoStyle.bottomMargin}
-                  onChange={(event) =>
-                    updateFinalVideoStyle("bottomMargin", Number(event.target.value))
-                  }
-                />
-              </label>
-            </div>
-            <button
-              className="secondary-button preview-action"
-              disabled={isGeneratingFinalVideoPreview || !finalVideo?.canPreview}
-              type="button"
-              onClick={generateFinalVideoPreview}
-            >
-              {isGeneratingFinalVideoPreview ? "正在生成参考帧..." : "生成字幕样式参考帧"}
-            </button>
-            {finalVideo?.previews?.some((preview) => preview.ready) && (
-              <div className="preview-grid">
-                {finalVideo.previews
-                  .filter((preview) => preview.ready)
-                  .map((preview, index) => (
-                    <figure key={preview.path}>
-                      <img
-                        alt={`字幕样式参考帧 ${index + 1}`}
-                        src={`${preview.url}?v=${previewVersion}`}
-                      />
-                      <figcaption>参考帧 {String(index + 1).padStart(2, "0")}</figcaption>
-                    </figure>
-                  ))}
               </div>
             )}
-          </section>
-          <DirectoryResult
-            artifactKey="finalVideo.outputDirectory"
-            label="最终成片输出目录"
-            path={finalVideo?.outputDirectory}
-            ready={finalVideo?.outputDirectoryReady}
-            onOpen={openPath}
-          />
-          {finalVideo?.outputs && (
-            <div className="track-results">
-              <FileResult artifactKey="finalVideo.styledAss" label="成片字幕 ASS" file={finalVideo.outputs.styledAss} onOpen={openPath} />
-              <FileResult artifactKey="finalVideo.video" label="最终英文成片 MP4" file={finalVideo.outputs.video} onOpen={openPath} />
-              <FileResult artifactKey="finalVideo.report" label="成片结果报告" file={finalVideo.outputs.report} onOpen={openPath} />
+            <div className="workflow-card manual-step" id="workflow-step-translation">
+              <p className="eyebrow">步骤 05</p>
+              <h2>角色校对与英文翻译</h2>
+              <p>将最终中文字幕文件交给 Gemini 生成 JSON：逐条英文显示字幕和整句配音分段建议。读取后可校对角色与译文，配音阶段会按整句时间窗切割原始对白作为参考音色。</p>
+              <div className={`step-status ${canTranslate ? "ready" : "blocked"}`}>
+                <strong>{canTranslate ? "可以翻译与校对" : "等待最终中文字幕"}</strong>
+                <small>
+                  {canTranslate
+                    ? subtitleEditorComplete
+                      ? "英文译稿已解析，可继续校对并保存后进入英文配音。"
+                      : "复制提示词交给 Gemini 生成 JSON，再读取文件并校对。"
+                    : "请先完成步骤 04，生成最终中文字幕 SRT。"}
+                </small>
+              </div>
+              {canTranslate && subtitleEditor?.canEdit && (
+                <>
+                  <div className="subtitle-editor-summary">
+                    <strong>{subtitleEditorCues.length} 条字幕</strong>
+                    <span>已填写英文 {completedEnglishCount} 条</span>
+                    <span>已跳过 {skippedEnglishCount} 条</span>
+                    <span>时间码只读</span>
+                  </div>
+                  {pendingEnglishNumbers.length > 0 && (
+                    <p className="subtitle-editor-missing">
+                      待处理英文：{pendingEnglishNumbers.join("、")}
+                    </p>
+                  )}
+                  {skippedEnglishCount > 0 && (
+                    <p className="subtitle-editor-skip-hint">
+                      留空条目会在保存时视为跳过，不会阻塞后续配音流程。
+                    </p>
+                  )}
+                  {subtitleEditor.draftError && <p className="workflow-error">{subtitleEditor.draftError}</p>}
+                  <section className="translation-assistant-panel" aria-label="Gemini 翻译提示词">
+                    <div>
+                      <strong>Gemini 文件翻译提示词</strong>
+                      <p>
+                        提示词可编辑，要求 Gemini 读取中文字幕 SRT，并输出包含显示字幕与整句配音分段建议的 JSON。复制按钮会复制当前内容。
+                      </p>
+                    </div>
+                    <div className="translation-assistant-actions">
+                      <button className="secondary-button compact" type="button" onClick={copyTranslationPrompt}>
+                        复制当前提示词
+                      </button>
+                      <button className="secondary-button compact" type="button" onClick={resetTranslationPrompt}>
+                        恢复原始提示词
+                      </button>
+                      <button
+                        className="secondary-button compact"
+                        type="button"
+                        onClick={() => setTranslationPromptVisible((visible) => !visible)}
+                      >
+                        {translationPromptVisible ? "收起提示词" : "查看提示词"}
+                      </button>
+                    </div>
+                    {translationPromptVisible && (
+                      <textarea
+                        className="translation-prompt"
+                        rows={12}
+                        value={translationPrompt}
+                        onChange={(event) => setTranslationPromptText(event.target.value)}
+                      />
+                    )}
+                  </section>
+                  <section className="translation-file-panel" aria-label="字幕文件交接">
+                    <div className="track-results">
+                      <FileResult
+                        artifactKey="finalSubtitles.srt"
+                        label="Gemini 输入：最终中文字幕 SRT"
+                        file={finalSubtitles.outputs.srt}
+                        onOpen={openPath}
+                        readyText="已就绪"
+                      />
+                      <FileResult
+                        artifactKey="translation.geminiJson"
+                        label="Gemini 输出：翻译与整句分段 JSON"
+                        file={{
+                          path: finalSubtitles.translationTarget.jsonPath,
+                          ready: finalSubtitles.translationTarget.jsonReady,
+                        }}
+                        onOpen={openPath}
+                      />
+                    </div>
+                    <button
+                      className="secondary-button compact"
+                      disabled={isImportingTranslationSrt}
+                      type="button"
+                      onClick={importTranslationSrt}
+                    >
+                      {isImportingTranslationSrt ? "正在读取..." : "读取 Gemini 输出"}
+                    </button>
+                  </section>
+                  <div className="subtitle-editor-table" role="table" aria-label="字幕翻译与角色校对">
+                    <div className="subtitle-editor-header" role="row">
+                      <span>时间 / 中文</span>
+                      <span>角色</span>
+                      <span>英文字幕</span>
+                    </div>
+                    {subtitleEditorCues.map((cue) => (
+                      <div className="subtitle-editor-row" role="row" key={cue.number}>
+                        <div className="subtitle-source">
+                          <strong>{String(cue.number).padStart(3, "0")} · {cue.start} - {cue.end}</strong>
+                          <p>{cue.chinese}</p>
+                        </div>
+                        <div className="subtitle-role-field">
+                          <input
+                            aria-label={`第 ${cue.number} 条角色`}
+                            type="text"
+                            value={cue.role}
+                            onChange={(event) => updateSubtitleCue(cue.number, "role", event.target.value)}
+                          />
+                          <button
+                            className="role-apply-button"
+                            type="button"
+                            onClick={() => applyRoleToMatchingCues(cue.number)}
+                          >
+                            应用到同角色
+                          </button>
+                        </div>
+                        <textarea
+                          aria-label={`第 ${cue.number} 条英文字幕`}
+                          rows={2}
+                          value={cue.english}
+                          onChange={(event) => updateSubtitleCue(cue.number, "english", event.target.value)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {subtitleEditorError && <p className="workflow-error">{subtitleEditorError}</p>}
+                  {subtitleEditorMessage && <p className="copy-status">{subtitleEditorMessage}</p>}
+                  <div className="subtitle-editor-actions">
+                    <FileResult
+                      artifactKey="translation.geminiJson"
+                      label="Gemini 翻译 JSON"
+                      file={{
+                        path: finalSubtitles.translationTarget.jsonPath,
+                        ready: finalSubtitles.translationTarget.jsonReady,
+                      }}
+                      onOpen={openPath}
+                    />
+                    <FileResult
+                      artifactKey="translation.englishDraftSrt"
+                      label="英文显示字幕 SRT"
+                      file={{
+                        path: finalSubtitles.translationTarget.srtPath,
+                        ready: finalSubtitles.translationTarget.srtReady,
+                      }}
+                      onOpen={openPath}
+                    />
+                    <button
+                      className="primary-button"
+                      disabled={isSavingSubtitleEditor || subtitleEditorCues.length === 0}
+                      type="button"
+                      onClick={saveSubtitleEdits}
+                    >
+                      {isSavingSubtitleEditor
+                        ? "正在保存..."
+                        : subtitleEditorComplete
+                          ? "保存并完成英文字幕"
+                          : "保存编辑进度"}
+                    </button>
+                  </div>
+                </>
+              )}
+              {canTranslate && !subtitleEditor && !subtitleEditorError && (
+                <p className="copy-status">正在读取字幕编辑数据...</p>
+              )}
+              {subtitleEditorError && !subtitleEditor?.canEdit && (
+                <p className="workflow-error">{subtitleEditorError}</p>
+              )}
             </div>
-          )}
-          {finalVideoError && <p className="workflow-error">{finalVideoError}</p>}
-          {finalVideo?.error && <p className="workflow-error">{finalVideo.error}</p>}
-          <button
-            className="primary-button workflow-action"
-            disabled={
-              isStartingFinalVideo ||
-              finalVideo?.status === "running" ||
-              !finalVideo?.canRun ||
-              record.storageMode !== "reference"
-            }
-            type="button"
-            onClick={runFinalVideo}
-          >
-            {finalVideo?.status === "running"
-              ? "生成成片中..."
-              : finalVideo?.status === "completed"
-                ? "按当前样式重新生成最终成片"
-                : "替换音频并生成最终成片"}
-          </button>
-          <CancelTaskButton
-            busy={cancellingWorkflow === "final-video"}
-            visible={finalVideo?.status === "running"}
-            onClick={() =>
-              cancelWorkflow(
-                "final-video",
-                "final-video",
-                setFinalVideo,
-                setFinalVideoError,
-              )
-            }
-          />
-          </div>
-        </WorkflowStageSection>
+          </WorkflowStageSection>
+        )}
+        {(!embedded || visiblePanel === "englishDubbing") && (
+          <WorkflowStageSection group={workflowStageById.dubbing}>
+            <div className="workflow-card manual-step" id="workflow-step-englishDubbing">
+              <p className="eyebrow">步骤 06</p>
+              <h2>VoxCPM 英文配音与混音</h2>
+              <p>先将英文译稿同步到主时间轴并预检，再使用 VoxCPM 仅更新受影响配音片段，最后与 MX+FX 背景底轨混音。</p>
+              <div className={`step-status ${englishDubbing?.status || "blocked"}`}>
+                <strong>
+                  {englishDubbing?.status === "running" &&
+                    englishDubbing.stage === "preflight" &&
+                    "正在预检英文字幕"}
+                  {englishDubbing?.status === "running" &&
+                    englishDubbing.stage === "dubbing-groups" &&
+                    "正在规划英文整句分段"}
+                  {englishDubbing?.status === "running" &&
+                    englishDubbing.stage === "segments" &&
+                    "正在按整句分段切割 DX 对白轨"}
+                  {englishDubbing?.status === "running" &&
+                    englishDubbing.stage === "dubbing" &&
+                    "正在使用 VoxCPM 生成英文配音"}
+                  {englishDubbing?.status === "running" &&
+                    englishDubbing.stage === "redubbing" &&
+                    `正在重新配音第 ${String(englishDubbing.redubSegmentNumber || "").padStart(3, "0")} 段`}
+                  {englishDubbing?.status === "running" &&
+                    englishDubbing.stage === "mixing" &&
+                    "正在合成英文混音"}
+                  {englishDubbing?.status === "completed" && "英文成片混音已生成"}
+                  {englishDubbing?.status === "failed" && "处理失败"}
+                  {englishDubbing?.status === "cancelled" && "已取消"}
+                  {englishDubbing?.status === "unavailable" && "不可执行"}
+                  {(!englishDubbing || englishDubbing.status === "blocked") &&
+                    (missingEnglishDubbingInputs.length > 0 ? "等待必要输入就绪" : "等待英文字幕与音轨")}
+                  {englishDubbing?.status === "ready" && "可以开始"}
+                </strong>
+                <small>
+                  {englishDubbing?.status === "running"
+                    ? "任务包含字幕预检、分段切割、增量配音和整轨混音，页面会自动刷新状态。"
+                    : englishDubbing?.status === "cancelled"
+                      ? "任务已取消，可以重新执行。已生成且未过期的片段会继续复用。"
+                      : englishDubbing?.canRun
+                        ? englishDubbing?.mixOutdated
+                          ? "译稿或素材已变化，需要重新生成英文混音。"
+                          : "英文译稿、主时间轴与所需音轨已齐全，留空条目会自动跳过。"
+                        : missingEnglishDubbingInputs.length > 0
+                          ? `缺少：${missingEnglishDubbingInputs.join("、")}。留空条目会自动跳过。`
+                          : "需存在英文字幕译稿、最终中文字幕、DX 对白轨与 MX+FX 背景底轨。"}
+                </small>
+              </div>
+              <DubbingProgress progress={englishDubbing?.dubbingProgress} />
+              {englishDubbing?.inputs && (
+                <div className="track-results input-results">
+                  <FileResult artifactKey="finalSubtitles.srt" label="最终中文字幕（主时间轴）" file={englishDubbing.inputs.chineseTimelineSrt} onOpen={openPath} readyText="已就绪" />
+                  <FileResult artifactKey="translation.englishDraftSrt" label="英文字幕译稿" file={englishDubbing.inputs.englishDraftSrt} onOpen={openPath} readyText="已就绪" />
+                  <FileResult artifactKey="bsRoformer.dialogue" label="DX 对白轨" file={englishDubbing.inputs.dialogue} onOpen={openPath} readyText="已就绪" />
+                  <FileResult artifactKey="bsRoformer.background" label="MX+FX 背景底轨" file={englishDubbing.inputs.background} onOpen={openPath} readyText="已就绪" />
+                </div>
+              )}
+              <DirectoryResult
+                artifactKey="englishDubbing.workDirectory"
+                label="工作目录"
+                path={englishDubbing?.workDirectory}
+                ready={englishDubbing?.workDirectoryReady}
+                onOpen={openPath}
+              />
+              {englishDubbing?.outputs && (
+                <div className="track-results">
+                  <FileResult artifactKey="translation.controlledEnglishSrt" label="受控英文字幕 SRT" file={englishDubbing.outputs.controlledEnglishSrt} onOpen={openPath} />
+                  <FileResult artifactKey="translation.preflightReport" label="英文字幕预检报告" file={englishDubbing.outputs.preflightReport} onOpen={openPath} />
+                  <FileResult artifactKey="englishDubbing.dubbingGroupsCsv" label="英文配音整句分段清单" file={englishDubbing.outputs.dubbingGroupsCsv} onOpen={openPath} />
+                  <FileResult artifactKey="englishDubbing.dubbingGroupsReport" label="英文配音整句分段报告" file={englishDubbing.outputs.dubbingGroupsReport} onOpen={openPath} />
+                  <FileResult artifactKey="englishDubbing.segmentManifest" label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
+                  <FileResult artifactKey="englishDubbing.dialogueTrack" label="英文对白整轨" file={englishDubbing.outputs.dialogueTrack} onOpen={openPath} />
+                  <FileResult artifactKey="englishDubbing.mixedTrack" label="英文成片混音 MX+FX" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
+                  <FileResult artifactKey="englishDubbing.assemblyReport" label="英文整轨合成结果" file={englishDubbing.outputs.assemblyReport} onOpen={openPath} />
+                </div>
+              )}
+              {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
+              {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
+              <button
+                className="primary-button workflow-action"
+                disabled={
+                  isStartingEnglishDubbing ||
+                  englishDubbing?.status === "running" ||
+                  !englishDubbing?.canRun ||
+                  record.storageMode !== "reference"
+                }
+                type="button"
+                onClick={runEnglishDubbing}
+              >
+                {englishDubbing?.status === "running"
+                  ? "处理中..."
+                  : englishDubbing?.status === "completed"
+                    ? "重新生成英文混音"
+                    : "开始英文配音与混音"}
+              </button>
+              <CancelTaskButton
+                busy={cancellingWorkflow === "english-dubbing-mix"}
+                visible={englishDubbing?.status === "running"}
+                onClick={() =>
+                  cancelWorkflow(
+                    "english-dubbing-mix",
+                    "english-dubbing-mix",
+                    setEnglishDubbing,
+                    setEnglishDubbingError,
+                  )
+                }
+              />
+            </div>
+            <div className="workflow-card manual-step redub-step">
+              <p className="eyebrow">步骤 07</p>
+              <h2>单条重新配音</h2>
+              <p>输入英文配音分段清单中的编号，只重新生成这一条 VoxCPM 配音，并自动重新合成英文混音。</p>
+              <div className={`step-status ${englishDubbing?.canRedub ? "ready" : "blocked"}`}>
+                <strong>
+                  {englishDubbing?.status === "running" &&
+                    englishDubbing.stage === "redubbing" &&
+                    `正在重新配音第 ${String(englishDubbing.redubSegmentNumber || "").padStart(3, "0")} 段`}
+                  {englishDubbing?.status === "running" &&
+                    englishDubbing.stage === "mixing" &&
+                    "正在重新合成英文混音"}
+                  {englishDubbing?.status !== "running" &&
+                    englishDubbing?.canRedub &&
+                    "可以单条重新配音"}
+                  {englishDubbing?.status !== "running" &&
+                    !englishDubbing?.canRedub &&
+                    "等待完整英文混音"}
+                </strong>
+                <small>
+                  {englishDubbing?.status === "running"
+                    ? "单条重配音任务完成后，英文混音会自动更新，最终成片需在步骤 08 重新生成。"
+                    : englishDubbing?.canRedub
+                      ? "编号来自步骤 06 的“英文配音分段清单”或 VoxCPM 试听报告。"
+                      : "请先完成步骤 06，且当前英文混音不能处于过期状态。"}
+                </small>
+              </div>
+              <section className="single-redub-panel" aria-label="单条重新配音">
+                <label className="single-redub-field">
+                  <span>配音分段编号</span>
+                  <input
+                    min="1"
+                    placeholder="例如 12"
+                    type="number"
+                    value={redubSegmentNumber}
+                    onChange={(event) => setRedubSegmentNumber(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="primary-button single-redub-action"
+                  disabled={isStartingSingleRedub || !canStartSingleRedub}
+                  type="button"
+                  onClick={runSingleEnglishDubbingRedub}
+                >
+                  {isStartingSingleRedub ? "正在启动..." : "重新配音这一条"}
+                </button>
+              </section>
+              {englishDubbing?.outputs && (
+                <div className="track-results">
+                  <FileResult artifactKey="englishDubbing.segmentManifest" label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
+                  <FileResult artifactKey="englishDubbing.dubbingReport" label="VoxCPM 试听报告" file={englishDubbing.outputs.dubbingReport} onOpen={openPath} />
+                  <FileResult artifactKey="englishDubbing.mixedTrack" label="更新后的英文混音" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
+                </div>
+              )}
+              {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
+              {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
+            </div>
+          </WorkflowStageSection>
+        )}
+        {(!embedded || visiblePanel === "finalVideo") && (
+          <WorkflowStageSection group={workflowStageById.delivery}>
+            <div className="workflow-card manual-step final-video-step" id="workflow-step-finalVideo">
+              <p className="eyebrow">步骤 08</p>
+              <h2>替换英文音轨并烧录字幕</h2>
+              <p>用英文成片混音替换原视频音频，并将受控英文字幕按所选样式烧录到视频中，输出最终英文成片。</p>
+              <div className={`step-status ${finalVideo?.status || "blocked"}`}>
+                <strong>
+                  {finalVideo?.status === "running" && "正在生成最终成片"}
+                  {finalVideo?.status === "completed" && "最终英文成片已生成"}
+                  {finalVideo?.status === "failed" && "成片生成失败"}
+                  {finalVideo?.status === "cancelled" && "已取消"}
+                  {finalVideo?.status === "unavailable" && "不可执行"}
+                  {(!finalVideo || finalVideo.status === "blocked") && "等待英文混音与字幕"}
+                  {finalVideo?.status === "ready" && "可以开始"}
+                </strong>
+                <small>
+                  {finalVideo?.status === "running"
+                    ? "正在编码视频、烧录字幕并替换音频，页面会自动刷新状态。"
+                    : finalVideo?.status === "cancelled"
+                      ? "任务已取消，可以按当前样式重新生成。"
+                      : finalVideo?.status === "failed"
+                        ? "最终成片上次生成失败，可以查看错误信息后重新生成。"
+                        : finalVideo?.canRun
+                          ? "受控英文字幕与英文成片混音已齐全，可先生成参考帧确认样式。"
+                          : "需先完成步骤 06/07 的字幕预检与英文成片混音。"}
+                </small>
+              </div>
+              {finalVideo?.inputs && (
+                <div className="track-results input-results final-input-results">
+                  <FileResult artifactKey="source.video" label="原视频画面" file={finalVideo.inputs.video} onOpen={openPath} readyText="已就绪" />
+                  <FileResult artifactKey="translation.controlledEnglishSrt" label="受控英文字幕 SRT" file={finalVideo.inputs.subtitle} onOpen={openPath} readyText="已就绪" />
+                  <FileResult artifactKey="englishDubbing.mixedTrack" label="替换音轨：英文成片混音" file={finalVideo.inputs.audio} onOpen={openPath} readyText="已就绪" />
+                </div>
+              )}
+              <section className="subtitle-style-panel" aria-label="英文字幕样式设置">
+                <div className="style-panel-heading">
+                  <strong>字幕样式</strong>
+                  <small>在画面中直接拖动字幕并调整大小，生成最终视频时直接采用当前参数。</small>
+                </div>
+                <div className="style-controls">
+                  <label className="style-field font-field">
+                    <span>字体</span>
+                    <input
+                      type="text"
+                      value={finalVideoStyle.fontName}
+                      onChange={(event) => updateFinalVideoStyle("fontName", event.target.value)}
+                    />
+                  </label>
+                  <label className="style-field">
+                    <span>字体大小</span>
+                    <input
+                      min="18"
+                      max="96"
+                      type="number"
+                      value={finalVideoStyle.fontSize}
+                      onChange={(event) => updateFinalVideoStyle("fontSize", Number(event.target.value))}
+                    />
+                  </label>
+                  <label className="style-field color-field">
+                    <span>字幕颜色</span>
+                    <input
+                      type="color"
+                      value={finalVideoStyle.textColor}
+                      onChange={(event) => updateFinalVideoStyle("textColor", event.target.value)}
+                    />
+                    <code>{finalVideoStyle.textColor}</code>
+                  </label>
+                  <label className="style-field color-field">
+                    <span>背景颜色</span>
+                    <input
+                      type="color"
+                      value={finalVideoStyle.backgroundColor}
+                      onChange={(event) => updateFinalVideoStyle("backgroundColor", event.target.value)}
+                    />
+                    <code>{finalVideoStyle.backgroundColor}</code>
+                  </label>
+                  <label className="style-field range-field">
+                    <span>背景不透明度 <strong>{Math.round(finalVideoStyle.backgroundOpacity * 100)}%</strong></span>
+                    <input
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      type="range"
+                      value={finalVideoStyle.backgroundOpacity}
+                      onChange={(event) =>
+                        updateFinalVideoStyle("backgroundOpacity", Number(event.target.value))
+                      }
+                    />
+                  </label>
+                  <div className="style-field subtitle-position-readout">
+                    <span>字幕位置</span>
+                    <strong>
+                      X {Math.round(finalVideoStyle.positionX)}% · Y {Math.round(finalVideoStyle.positionY)}%
+                    </strong>
+                  </div>
+                </div>
+                {!finalVideo?.previews?.some((preview) => preview.ready) && (
+                  <button
+                    className="secondary-button preview-action"
+                    disabled={isGeneratingFinalVideoPreview || !finalVideo?.canPreview}
+                    type="button"
+                    onClick={generateFinalVideoPreview}
+                  >
+                    {isGeneratingFinalVideoPreview ? "正在载入画面..." : "载入字幕编辑画面"}
+                  </button>
+                )}
+                {finalVideo?.previews?.some((preview) => preview.ready) && (
+                  <div className="preview-grid">
+                    {finalVideo.previews
+                      .filter((preview) => preview.ready)
+                      .slice(0, 1)
+                      .map((preview) => (
+                        <SubtitlePreviewFigure
+                          key={preview.path}
+                          preview={preview}
+                          previewVersion={previewVersion}
+                          previewText={
+                            subtitleEditorCues.find(
+                              (cue) => cue.english.trim() && !cue.skipped,
+                            )?.english.trim() || "Drag this subtitle to place it"
+                          }
+                          style={finalVideoStyle}
+                          onStyleChange={updateFinalVideoStyleValues}
+                        />
+                      ))}
+                  </div>
+                )}
+              </section>
+              <DirectoryResult
+                artifactKey="finalVideo.outputDirectory"
+                label="最终成片输出目录"
+                path={finalVideo?.outputDirectory}
+                ready={finalVideo?.outputDirectoryReady}
+                onOpen={openPath}
+              />
+              {finalVideo?.outputs && (
+                <div className="track-results">
+                  <FileResult artifactKey="finalVideo.styledAss" label="成片字幕 ASS" file={finalVideo.outputs.styledAss} onOpen={openPath} />
+                  <FileResult artifactKey="finalVideo.video" label="最终英文成片 MP4" file={finalVideo.outputs.video} onOpen={openPath} />
+                  <FileResult artifactKey="finalVideo.report" label="成片结果报告" file={finalVideo.outputs.report} onOpen={openPath} />
+                </div>
+              )}
+              {finalVideoError && <p className="workflow-error">{finalVideoError}</p>}
+              {finalVideo?.error && <p className="workflow-error">{finalVideo.error}</p>}
+              <button
+                className="primary-button workflow-action"
+                disabled={
+                  isStartingFinalVideo ||
+                  finalVideo?.status === "running" ||
+                  !finalVideo?.canRun ||
+                  record.storageMode !== "reference"
+                }
+                type="button"
+                onClick={runFinalVideo}
+              >
+                {finalVideo?.status === "running"
+                  ? "生成成片中..."
+                  : finalVideo?.status === "completed"
+                    ? "按当前样式重新生成最终成片"
+                    : "替换音频并生成最终成片"}
+              </button>
+              <CancelTaskButton
+                busy={cancellingWorkflow === "final-video"}
+                visible={finalVideo?.status === "running"}
+                onClick={() =>
+                  cancelWorkflow(
+                    "final-video",
+                    "final-video",
+                    setFinalVideo,
+                    setFinalVideoError,
+                  )
+                }
+              />
+            </div>
+          </WorkflowStageSection>
+        )}
       </section>
-    </main>
+    </PageContainer>
   );
 }
 

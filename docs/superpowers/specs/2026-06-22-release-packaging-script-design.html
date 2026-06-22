@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>一键发布打包脚本设计</title></head>
+<body>
+  <h1>一键发布打包脚本设计</h1>
+  <p>新增 PowerShell 发布脚本。脚本删除旧 <code>release</code> 目录，运行 Node 与 Python 测试，生成安装版和便携版，执行桌面包校验并输出新产物路径。任一步失败立即退出。</p>
+  <p>通过 <code>npm run release</code> 调用，版本更新为 <code>0.2.12</code>。</p>
+</body>
+</html>

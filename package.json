@@ -2,7 +2,7 @@
   "name": "video-translation-workflow",
   "productName": "影译工坊",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.14",
   "description": "面向本地视频翻译制作流程的桌面工作台",
   "author": "影译工坊",
   "main": "electron/main.js",
@@ -15,6 +15,7 @@
     "desktop:dist": "npm run desktop:patch-builder && npm run build && electron-builder --win nsis portable && npm run desktop:verify",
     "desktop:patch-builder": "node .\\scripts\\patch_electron_builder_portable.mjs",
     "desktop:verify": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\verify_desktop_package.ps1",
+    "release": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\package_release.ps1",
     "test:node": "node --test tests/*.test.mjs",
     "start": "node server/index.js"
   },

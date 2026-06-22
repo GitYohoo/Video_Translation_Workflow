@@ -15,6 +15,7 @@ import {
   loadDesktopSettings,
   writeDesktopSettings,
 } from "./desktop-settings.js";
+import { loadDesktopApplication } from "./startup-navigation.js";
 
 const electronDirectory = path.dirname(fileURLToPath(import.meta.url));
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -114,7 +115,6 @@ function createMainWindow() {
     mainWindow = null;
   });
 
-  void mainWindow.loadFile(path.join(electronDirectory, "splash.html"));
 }
 
 async function desktopInfo() {
@@ -172,8 +172,14 @@ async function startDesktopApplication() {
   createMainWindow();
 
   const { startServer } = await import("../server/index.js");
-  backendListener = await startServer({ port: 0 });
-  await mainWindow.loadURL(backendListener.url);
+  backendListener = await loadDesktopApplication({
+    window: mainWindow,
+    splashPath: path.join(electronDirectory, "splash.html"),
+    onServerReady: (listener) => {
+      backendListener = listener;
+    },
+    startServer: () => startServer({ port: 0 }),
+  });
 
   const captureArgument = process.argv.find((argument) => argument.startsWith("--capture-preview="));
   if (captureArgument) {
