@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>依赖安全补丁升级设计</title>
+  <style>
+    body { max-width: 900px; margin: 40px auto; padding: 0 24px 64px; color: #172033; font: 16px/1.7 system-ui, sans-serif; }
+    h1, h2 { line-height: 1.3; }
+    code { padding: .15em .35em; border-radius: 4px; background: #eef2f7; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 9px 11px; border: 1px solid #ccd5e1; text-align: left; }
+    th { background: #f5f7fa; }
+  </style>
+</head>
+<body>
+  <h1>依赖安全补丁升级设计</h1>
+  <p><strong>日期：</strong>2026-06-23</p>
+  <p><strong>目标版本：</strong>0.2.19</p>
+
+  <h2>目标</h2>
+  <p>
+    修复 <code>npm audit</code> 报告的三个高危依赖类别，不跨越现有主版本，
+    不改变业务代码与公开 API，并保持当前桌面打包链可用。
+  </p>
+
+  <h2>根因与目标版本</h2>
+  <table>
+    <thead><tr><th>依赖</th><th>当前版本</th><th>修复版本</th><th>来源</th></tr></thead>
+    <tbody>
+      <tr><td>Vite</td><td>6.4.2</td><td>6.4.3</td><td>直接开发依赖</td></tr>
+      <tr><td>form-data</td><td>4.0.5</td><td>4.0.6</td><td>electron-builder 传递依赖</td></tr>
+      <tr><td>undici</td><td>6.26.0</td><td>6.27.0</td><td>node-gyp 传递依赖</td></tr>
+      <tr><td>undici</td><td>7.27.2</td><td>7.28.0</td><td>Electron 下载工具传递依赖</td></tr>
+    </tbody>
+  </table>
+
+  <h2>实施方式</h2>
+  <ol>
+    <li>执行不带 <code>--force</code> 的 <code>npm audit fix</code>，只接受 npm 已确认的兼容补丁。</li>
+    <li>确认 <code>package.json</code> 的 Vite 范围仍为 6.x，锁文件解析到 6.4.3。</li>
+    <li>同步 README 中关于依赖审计的状态说明。</li>
+    <li>项目版本从当前待发布的 0.2.18 更新为 0.2.19，并同步 README 徽章与更新说明。</li>
+  </ol>
+
+  <h2>验证</h2>
+  <ul>
+    <li><code>npm audit --audit-level=low</code> 必须报告零漏洞。</li>
+    <li><code>npm ls vite undici form-data --all</code> 必须显示修复版本。</li>
+    <li>Node.js 133 项测试和 Python 6 项测试必须全部通过。</li>
+    <li><code>npm run build</code> 必须成功。</li>
+    <li>运行 Electron 打包配置相关测试，确认依赖升级未破坏构建约束。</li>
+  </ul>
+
+  <h2>发布边界</h2>
+  <p>本轮继续遵守既有约定：设计说明单独本地提交；实际修改统一暂存，但不提交、不推送远端。</p>
+</body>
+</html>
