@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>公共仓库安全清理与文档完善设计</title>
+  <style>
+    body {
+      max-width: 960px;
+      margin: 40px auto;
+      padding: 0 24px 64px;
+      color: #172033;
+      font: 16px/1.7 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    h1, h2 { line-height: 1.3; }
+    code {
+      padding: 0.15em 0.35em;
+      border-radius: 4px;
+      background: #eef2f7;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 10px 12px;
+      border: 1px solid #ccd5e1;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f5f7fa; }
+    .note {
+      padding: 12px 16px;
+      border-left: 4px solid #3b82f6;
+      background: #eff6ff;
+    }
+  </style>
+</head>
+<body>
+  <h1>公共仓库安全清理与文档完善设计</h1>
+
+  <p><strong>日期：</strong>2026-06-23</p>
+  <p><strong>目标版本：</strong>0.2.18</p>
+
+  <h2>1. 目标</h2>
+  <p>
+    在不破坏当前本机使用方式和其他用户部署能力的前提下，清理不适合出现在 GitHub
+    公共仓库中的本地配置，强化忽略规则，完善仓库首页文档，并把当前已暂存的六个功能文件纳入
+    0.2.18 版本说明。本轮仅完成本地修改与验证，不提交功能变更，不推送远端。
+  </p>
+
+  <h2>2. 当前状态</h2>
+  <ul>
+    <li>实际 Git 仓库位于 <code>Video_Translation_Workflow</code> 子目录。</li>
+    <li>当前分支为 <code>simplified-workflow</code>，远端为 GitHub 仓库。</li>
+    <li>已有六个暂存文件：<code>package.json</code>、<code>package-lock.json</code>、<code>server/index.js</code>、<code>src/main.jsx</code>、<code>src/styles.css</code>、<code>tests/simplified-page.test.mjs</code>。</li>
+    <li>现有功能修改包括界面精简、桌面双栏独立滚动、最终成片内嵌播放及对应测试。</li>
+    <li>当前 Git 历史扫描未发现真实 API 密钥、访问令牌、私钥或个人邮箱。</li>
+    <li><code>.claude/settings.local.json</code> 是本机工具权限配置，不应继续由公共仓库跟踪。</li>
+    <li>README 徽章仍显示 0.2.14，与当前代码版本不一致。</li>
+  </ul>
+
+  <h2>3. 清理方案</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>项目</th>
+        <th>处理方式</th>
+        <th>兼容性保证</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Claude 本机配置</td>
+        <td>将 <code>.claude/settings.local.json</code> 从 Git 索引移除并加入忽略规则。</td>
+        <td>本地文件继续保留，不影响当前环境。</td>
+      </tr>
+      <tr>
+        <td>环境与密钥文件</td>
+        <td>忽略 <code>.env</code>、本地 settings、Token、证书、私钥和常见凭据文件。</td>
+        <td>保留 <code>data/settings.example.json</code> 作为可复制的公开示例。</td>
+      </tr>
+      <tr>
+        <td>运行数据</td>
+        <td>继续忽略模型、缓存、日志、任务状态、视频索引、构建和发布产物。</td>
+        <td>程序运行时自动创建所需目录，不删除本机已有数据。</td>
+      </tr>
+      <tr>
+        <td>D 盘默认路径</td>
+        <td>保留不含用户名的通用默认路径，并在 README 中说明可配置项。</td>
+        <td>符合项目优先使用 D 盘的约束，也允许其他用户覆盖。</td>
+      </tr>
+      <tr>
+        <td>历史记录</td>
+        <td>不重写 Git 历史。</td>
+        <td>扫描未发现真实秘密，避免不必要的强制推送和提交哈希变更。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>4. README 设计</h2>
+  <p>
+    保留 GitHub 识别所需的 <code>README.md</code> 文件名，正文使用 GitHub 兼容的 Markdown 与
+    HTML 组合排版。README 将以中文为主，保留简洁英文项目简介，并补齐以下内容：
+  </p>
+  <ul>
+    <li>项目定位、当前成熟度和本地优先的隐私边界。</li>
+    <li>主要功能与完整视频翻译流程。</li>
+    <li>Windows、Node.js、Python、FFmpeg、CUDA 与模型相关前置条件。</li>
+    <li>源码启动、Electron 桌面启动和发布打包命令。</li>
+    <li>运行配置文件的复制方法、字段说明和 D 盘默认目录。</li>
+    <li>Hugging Face Token 只通过本地文件配置且不得提交的安全说明。</li>
+    <li>运行数据、模型、项目产物与源码目录的边界。</li>
+    <li>0.2.18 中现有六个暂存文件对应的用户可见更新。</li>
+    <li>测试命令、常见问题、已知限制和贡献前检查。</li>
+  </ul>
+
+  <h2>5. 版本策略</h2>
+  <p>
+    将 <code>package.json</code> 与 <code>package-lock.json</code> 从 0.2.17 更新到
+    0.2.18，同时同步 README 版本徽章。此次递增用于覆盖当前功能改进、安全清理与文档更新。
+  </p>
+
+  <h2>6. 验证方案</h2>
+  <ol>
+    <li>运行 Node.js 完整测试套件：<code>npm run test:node</code>。</li>
+    <li>运行现有 Python 单元测试。</li>
+    <li>运行生产构建：<code>npm run build</code>。</li>
+    <li>扫描所有已跟踪文件和 Git 历史中的常见密钥、Token、私钥、个人路径与邮箱模式。</li>
+    <li>检查忽略规则，确认本地配置、运行数据、模型、日志和发布产物不会被 Git 跟踪。</li>
+    <li>检查最终差异，确保不删除本机设置和运行数据，不混入仓库上层的个人字幕与网络配置。</li>
+  </ol>
+
+  <h2>7. 提交与远端边界</h2>
+  <p class="note">
+    本轮不推送 GitHub。设计说明可单独进行本地提交，以满足设计留档要求；实际功能、安全清理、
+    README 和版本更新保持为本地工作区变更，等待用户以后明确要求同步远端。
+  </p>
+
+  <h2>8. 非目标</h2>
+  <ul>
+    <li>不重写 Git 历史。</li>
+    <li>不删除本机模型、依赖、视频、日志或用户设置。</li>
+    <li>不改变现有工作流业务逻辑，除非验证发现安全或可用性缺陷。</li>
+    <li>不安装或调用 GitHub CLI，不创建 Pull Request，不推送分支。</li>
+  </ul>
+</body>
+</html>
