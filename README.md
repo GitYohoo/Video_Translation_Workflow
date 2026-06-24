@@ -19,20 +19,9 @@
 
 ## 效果演示
 
-<table>
-  <tr>
-    <td align="center" width="50%">
-      <strong>原视频</strong>
-      <br><br>
-      <video src="docs/assets/0.004_original.mp4" controls width="100%"></video>
-    </td>
-    <td align="center" width="50%">
-      <strong>翻译后效果</strong>
-      <br><br>
-      <video src="docs/assets/0.004_translated.mp4" controls width="100%"></video>
-    </td>
-  </tr>
-</table>
+| 原视频 | 翻译后效果 |
+| :---: | :---: |
+| [🎬 点击播放原视频](docs/assets/0.004_original.mp4) | [🔊 点击播放翻译后效果](docs/assets/0.004_translated.mp4) |
 
 ## 项目能力
 
