@@ -61,7 +61,7 @@ test("summarizes the currently running step before offering another action", () 
   assert.match(overview.headline, /正在/);
 });
 
-test("marks the project complete when the final video exists", () => {
+test("moves from exported video to final validation", () => {
   const overview = buildWorkflowOverview({
     storageMode: "reference",
     separation: { status: "completed" },
@@ -72,6 +72,24 @@ test("marks the project complete when the final video exists", () => {
     subtitleEditorComplete: true,
     englishDubbing: { status: "completed" },
     finalVideo: { status: "completed" },
+  });
+
+  assert.equal(overview.nextAction.id, "finalValidation");
+  assert.equal(overview.completedCount, overview.totalCount - 1);
+});
+
+test("marks the project complete when final validation exists", () => {
+  const overview = buildWorkflowOverview({
+    storageMode: "reference",
+    separation: { status: "completed" },
+    ocr: { status: "completed" },
+    speakers: { status: "completed" },
+    finalSubtitles: { status: "completed" },
+    canTranslate: true,
+    subtitleEditorComplete: true,
+    englishDubbing: { status: "completed" },
+    finalVideo: { status: "completed" },
+    finalValidation: { status: "completed" },
   });
 
   assert.equal(overview.nextAction, null);
@@ -90,6 +108,7 @@ test("keeps completed workflow state visible for legacy storage records", () => 
     subtitleEditorComplete: true,
     englishDubbing: { status: "completed" },
     finalVideo: { status: "completed" },
+    finalValidation: { status: "completed" },
   });
 
   assert.equal(overview.completedCount, overview.totalCount);
@@ -107,6 +126,7 @@ test("groups the primary workflow into user-facing stages", () => {
       { id: "subtitles", stepIds: ["finalSubtitles", "translation"] },
       { id: "dubbing", stepIds: ["englishDubbing"] },
       { id: "delivery", stepIds: ["finalVideo"] },
+      { id: "validation", stepIds: ["finalValidation"] },
     ],
   );
 });

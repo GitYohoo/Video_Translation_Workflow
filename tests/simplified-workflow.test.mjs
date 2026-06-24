@@ -101,7 +101,7 @@ test("summarizes a new project as waiting for an explicit start", () => {
   );
 });
 
-test("summarizes the simplified workflow as five user-facing steps", () => {
+test("summarizes the simplified workflow as six user-facing steps", () => {
   const overview = buildSimplifiedWorkflowOverview({
     started: false,
     storageMode: "reference",
@@ -117,9 +117,10 @@ test("summarizes the simplified workflow as five user-facing steps", () => {
       { id: "translation", title: "翻译校对", panelId: "translation" },
       { id: "englishDubbing", title: "英文配音", panelId: "englishDubbing" },
       { id: "finalVideo", title: "导出成片", panelId: "finalVideo" },
+      { id: "finalValidation", title: "最终验证", panelId: "finalValidation" },
     ],
   );
-  assert.equal(overview.totalCount, 5);
+  assert.equal(overview.totalCount, 6);
   assert.equal(overview.nextAction.id, "generateChinese");
   assert.equal(overview.nextAction.label, "开始生成中文字幕");
   assert.equal(overview.steps[0].label, "产出最终中文字幕 SRT");
@@ -147,7 +148,7 @@ test("opens subtitle review after the final Chinese SRT is ready", () => {
   assert.equal(overview.nextAction.label, "打开字幕校正");
 });
 
-test("shows all five stages complete when translation, dubbing, and final video are complete", () => {
+test("shows all six stages complete after final validation", () => {
   const overview = buildSimplifiedWorkflowOverview({
     started: true,
     storageMode: "reference",
@@ -158,10 +159,11 @@ test("shows all five stages complete when translation, dubbing, and final video 
     subtitleEditorComplete: true,
     englishDubbing: { status: "completed" },
     finalVideo: { status: "completed" },
+    finalValidation: { status: "completed" },
   });
 
-  assert.equal(overview.completedCount, 5);
+  assert.equal(overview.completedCount, 6);
   assert.equal(overview.percent, 100);
-  assert.equal(overview.headline, "英文成片已生成");
+  assert.equal(overview.headline, "最终验证已完成");
   assert.equal(overview.nextAction, null);
 });

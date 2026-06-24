@@ -20,11 +20,12 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { artifactDisplayName } from "./path-display.js";
+import { artifactDisplayName, pathLeafName } from "./path-display.js";
 import {
   clampSubtitleFontSize,
   clampSubtitlePosition,
   fontSizeFromResize,
+  subtitlePreviewFontSize,
   subtitlePositionFromDrag,
   subtitlePositionStyle,
 } from "./final-video-style.js";
@@ -69,6 +70,28 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function speakerToneClass(speaker = "") {
+  const text = String(speaker || "未标注");
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) % 6;
+  }
+  return `speaker-tone-${hash}`;
+}
+
+function dubbingSegmentDraftFrom(segment) {
+  if (!segment) {
+    return null;
+  }
+  return {
+    number: segment.number,
+    speaker: segment.speaker || "",
+    referenceAudioPath: segment.sourceAudio?.path || segment.referenceAudio?.path || "",
+    referenceAudioName: pathLeafName(segment.referenceAudio?.path || segment.sourceAudio?.path || ""),
+    text: segment.text || "",
+  };
+}
+
 function buildTranslationPrompt(chineseSrtPath, geminiJsonPath) {
   if (!chineseSrtPath || !geminiJsonPath) {
     return "";
@@ -94,8 +117,14 @@ ${geminiJsonPath}
 10. dubbing_groups 必须完整覆盖所有 display_subtitles，每条显示字幕只能出现一次。
 11. dubbing_groups 的 start 取第一条字幕开始时间，end 取最后一条字幕结束时间；后续会按这个整句时间窗切割原始 DX 对白轨作为参考音色。
 12. dubbing_groups 的 text 要适合 TTS 一次性朗读，可在不改变意思的前提下合并标点和轻微润色。
-13. 对“哈哈哈、呵呵、大笑、冷笑、哭声、抽泣、喘息、喘气、尖叫、咳嗽、叹气”等非语言人声，不要翻译成可朗读对白，也不要写成 ha ha ha 给 TTS 朗读；这类条目的 segment_type 必须写 preserve_original。
-14. 普通可朗读对白的 segment_type 必须写 tts。若一个 dubbing_group 内包含非语言人声并且没有实质台词，该 group 的 segment_type 必须是 preserve_original；如果非语言人声和实质台词混在一起，必须优先拆成相邻的 tts 与 preserve_original 两个 group。
+13. 对每个 segment_type 为 tts 的 dubbing_group 必须判断英文配音语速，计算公式为：英文词数 ÷ 可用秒数 × 60 = WPM。
+14. 可用秒数是该 dubbing_group 的 end 减去 start；英文词数只统计 text 中实际会朗读的英文单词。
+15. WPM 必须控制在 90–190 WPM，优先保持在 90–180 WPM，尽量不超过 180 WPM；只有为了保留准确语义和自然表达确实无法再压缩时，才允许落在 181–190 WPM。
+16. 如果 WPM 不在 90–190 范围内，必须修改英文译文：过快时用更简洁自然的表达，过慢时用更完整自然但不增加新事实的表达。修改时必须保留原有语境和意思、人物关系、语气、情绪与关键信息，不得曲解、遗漏或添加剧情。
+17. 修改译文后必须重新计算 WPM，持续调整到符合范围；同时保证 dubbing_groups 与对应 display_subtitles 的英文语义一致。每个 tts 类型的 dubbing_group 都要输出取整后的 wpm 数值。
+18. segment_type 为 preserve_original 的非语言人声不参与 WPM 计算，其 wpm 写 null。
+19. 对“哈哈哈、呵呵、大笑、冷笑、哭声、抽泣、喘息、喘气、尖叫、咳嗽、叹气”等非语言人声，不要翻译成可朗读对白，也不要写成 ha ha ha 给 TTS 朗读；这类条目的 segment_type 必须写 preserve_original。
+20. 普通可朗读对白的 segment_type 必须写 tts。若一个 dubbing_group 内包含非语言人声并且没有实质台词，该 group 的 segment_type 必须是 preserve_original；如果非语言人声和实质台词混在一起，必须优先拆成相邻的 tts 与 preserve_original 两个 group。
 
 JSON 格式：
 {
@@ -118,6 +147,7 @@ JSON 格式：
       "speaker": "角色名或未标注",
       "segment_type": "tts 或 preserve_original",
       "text": "A complete English sentence for one TTS pass.",
+      "wpm": 124,
       "merge_reason": "Fragments 1-3 form one complete sentence."
     }
   ]
@@ -227,10 +257,6 @@ function DubbingProgress({ progress }) {
     return null;
   }
   const percent = Number.isFinite(progress.percent) ? progress.percent : 0;
-  const completedSegmentText =
-    progress.completedSegmentIds?.length > 0
-      ? progress.completedSegmentIds.slice(-6).join("、")
-      : "暂无";
   return (
     <div className="dubbing-progress">
       <div className="dubbing-progress-head">
@@ -248,18 +274,30 @@ function DubbingProgress({ progress }) {
           </span>
         )}
       </div>
-      {progress.currentDetail && (
-        <p className="dubbing-progress-detail">{progress.currentDetail}</p>
-      )}
-      <p className="dubbing-progress-detail">
-        最近完成：{completedSegmentText}
-        {progress.completedSegmentIds?.length > 6 ? " ..." : ""}
-      </p>
-      {progress.generatedClips !== null && progress.generatedClips !== undefined && (
-        <p className="dubbing-progress-detail">已生成英文配音片段：{progress.generatedClips} 个</p>
-      )}
     </div>
   );
+}
+
+function formatTimelineSeconds(value) {
+  const seconds = Math.max(0, Number(value) || 0);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = (seconds % 60).toFixed(3).padStart(6, "0");
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${remainder}`;
+}
+
+function mergeTimelineRanges(ranges) {
+  return [...ranges]
+    .sort((left, right) => left.start - right.start || left.end - right.end)
+    .reduce((merged, range) => {
+      const previous = merged.at(-1);
+      if (previous && range.start <= previous.end) {
+        previous.end = Math.max(previous.end, range.end);
+      } else {
+        merged.push({ ...range });
+      }
+      return merged;
+    }, []);
 }
 
 function VideoThumbnail({ video }) {
@@ -324,6 +362,142 @@ function ProjectWorkflowOverview({ overview, nextDisabled, onRunNext, onStepSele
   );
 }
 
+function DubbingSegmentEditorPanel({
+  segments,
+  selectedSegment,
+  draft,
+  message,
+  versionKey,
+  disabled,
+  busy,
+  onSelect,
+  onDraftChange,
+  onChooseReferenceAudio,
+  onRegenerate,
+}) {
+  if (!segments.length) {
+    return null;
+  }
+  return (
+    <>
+      {message && <p className="workflow-message">{message}</p>}
+      <section className="dubbing-segment-editor" aria-label="配音条目编辑器">
+        <div className="dubbing-segment-list-panel">
+          <div className="segment-panel-heading">
+            <strong>配音条目</strong>
+            <span>{segments.length} 条</span>
+          </div>
+          <div className="dubbing-segment-list">
+            {segments.map((segment) => (
+              <button
+                className={`dubbing-segment-row ${speakerToneClass(segment.speaker)} ${
+                  segment.number === selectedSegment?.number ? "active" : ""
+                }`}
+                key={segment.number}
+                type="button"
+                onClick={() => onSelect(segment)}
+              >
+                <span className={`segment-number ${speakerToneClass(segment.speaker)}`}>
+                  {segment.displayNumber}
+                </span>
+                <span className="segment-main">
+                  <strong>{segment.speaker}</strong>
+                  <small>
+                    {segment.start} - {segment.end}
+                  </small>
+                  <span>{segment.text}</span>
+                </span>
+                <span className={`segment-ready ${segment.fittedAudio?.ready ? "ready" : "missing"}`}>
+                  {segment.fittedAudio?.ready ? "可试听" : "未生成"}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+        {selectedSegment && draft && (
+          <div className="dubbing-segment-detail">
+            <div className="segment-panel-heading">
+              <strong>配音详情</strong>
+              <span>第 {selectedSegment.displayNumber} 条</span>
+            </div>
+            <div className="segment-detail-grid">
+              <span>时间段</span>
+              <strong>
+                {selectedSegment.start} - {selectedSegment.end}
+              </strong>
+              <span>目标时长</span>
+              <strong>{selectedSegment.durationSeconds || "-"} 秒</strong>
+              <span>生成角色</span>
+              <strong>{selectedSegment.role || "未生成"}</strong>
+              <span>变速系数</span>
+              <strong>{selectedSegment.speedFactor || "-"}</strong>
+            </div>
+            {selectedSegment.fittedAudio?.ready && (
+              <label className="segment-audio-player">
+                <span>当前配音试听</span>
+                <audio
+                  controls
+                  preload="none"
+                  src={`${selectedSegment.fittedAudio.url}&v=${versionKey || ""}`}
+                />
+              </label>
+            )}
+            <div className="segment-audio-player reference-audio-player">
+              <span>参考音频试听</span>
+              {selectedSegment.referenceAudio?.ready ? (
+                <audio
+                  controls
+                  preload="none"
+                  src={`${selectedSegment.referenceAudio.url}&v=${versionKey || ""}`}
+                />
+              ) : (
+                <small>未找到参考音频</small>
+              )}
+              <button
+                className="secondary-button compact"
+                disabled={disabled || busy}
+                type="button"
+                onClick={onChooseReferenceAudio}
+              >
+                更改参考音频
+              </button>
+              {draft.referenceAudioName && (
+                <small className="reference-audio-name">已选：{draft.referenceAudioName}</small>
+              )}
+            </div>
+            <div className="segment-edit-grid">
+              <label>
+                <span>说话人</span>
+                <input
+                  type="text"
+                  value={draft.speaker}
+                  onChange={(event) => onDraftChange({ ...draft, speaker: event.target.value })}
+                />
+              </label>
+              <label className="segment-text-field">
+                <span>配音内容</span>
+                <textarea
+                  rows={4}
+                  value={draft.text}
+                  onChange={(event) => onDraftChange({ ...draft, text: event.target.value })}
+                />
+              </label>
+            </div>
+            <button
+              className="primary-button workflow-action"
+              disabled={disabled || busy}
+              type="button"
+              onClick={onRegenerate}
+            >
+              {busy ? "正在提交..." : "重新配音该条并合成整轨"}
+            </button>
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
 function WorkflowStageSection({ group, children }) {
   return (
     <section className={`workflow-stage workflow-stage-${group.id}`} aria-labelledby={`stage-${group.id}`}>
@@ -366,17 +540,17 @@ function SubtitlePreviewFigure({
   const draftStyleRef = useRef(null);
   const [interactionMode, setInteractionMode] = useState("");
   const [draftStyle, setDraftStyle] = useState(null);
-  const [sourceWidth, setSourceWidth] = useState(1920);
-  const [displayWidth, setDisplayWidth] = useState(0);
+  const [sourceHeight, setSourceHeight] = useState(1080);
+  const [displayHeight, setDisplayHeight] = useState(0);
   const effectiveStyle = draftStyle || style;
   const position = subtitlePositionStyle(
     effectiveStyle.positionX,
     effectiveStyle.positionY,
   );
-  const previewScale = displayWidth > 0 && sourceWidth > 0 ? displayWidth / sourceWidth : 1;
-  const previewFontSize = Math.max(
-    8,
-    clampSubtitleFontSize(effectiveStyle.fontSize) * previewScale,
+  const previewFontSize = subtitlePreviewFontSize(
+    effectiveStyle.fontSize,
+    displayHeight,
+    sourceHeight,
   );
   const backgroundAlpha = Math.round(
     Math.min(1, Math.max(0, Number(effectiveStyle.backgroundOpacity))) * 255,
@@ -389,8 +563,8 @@ function SubtitlePreviewFigure({
     if (!image) {
       return;
     }
-    setSourceWidth(image.naturalWidth || 1920);
-    setDisplayWidth(image.clientWidth);
+    setSourceHeight(image.naturalHeight || 1080);
+    setDisplayHeight(image.clientHeight);
   }, []);
 
   useEffect(() => {
@@ -531,50 +705,52 @@ function SubtitlePreviewFigure({
 
   return (
     <figure className="subtitle-editor-preview">
-      <div
-        ref={frameRef}
-        className={`subtitle-preview-frame ${interactionMode ? "interacting" : ""}`}
-      >
-        <img
-          ref={imageRef}
-          alt="字幕位置编辑参考帧"
-          src={`${preview.url}?v=${previewVersion}`}
-          onLoad={updateImageMeasurements}
-        />
-        {interactionMode && (
-          <>
-            <span className="subtitle-canvas-guide vertical" style={{ left: position.left }} />
-            <span className="subtitle-canvas-guide horizontal" style={{ top: position.top }} />
-          </>
-        )}
+      <div className={`subtitle-preview-frame ${interactionMode ? "interacting" : ""}`}>
         <div
-          aria-label={`拖动字幕调整位置，拖动四角调整大小。当前位置横向 ${Math.round(effectiveStyle.positionX)}%，纵向 ${Math.round(effectiveStyle.positionY)}%，字号 ${effectiveStyle.fontSize}`}
-          className={`subtitle-edit-box ${interactionMode || ""}`}
-          role="button"
-          tabIndex="0"
-          title="拖动字幕移动；拖动四角调整大小"
-          style={{
-            ...position,
-            backgroundColor: `${effectiveStyle.backgroundColor}${backgroundAlpha}`,
-            color: effectiveStyle.textColor,
-            fontFamily: effectiveStyle.fontName,
-            fontSize: `${previewFontSize}px`,
-          }}
-          onKeyDown={handleKeyDown}
-          onPointerCancel={stopInteraction}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={stopInteraction}
+          ref={frameRef}
+          className="subtitle-preview-canvas"
         >
-          <span className="subtitle-edit-text">{previewText}</span>
-          {["nw", "ne", "sw", "se"].map((handle) => (
-            <span
-              aria-hidden="true"
-              className={`subtitle-resize-handle ${handle}`}
-              data-resize-handle={handle}
-              key={handle}
-            />
-          ))}
+          <img
+            ref={imageRef}
+            alt="字幕位置编辑参考帧"
+            src={`${preview.url}?v=${previewVersion}`}
+            onLoad={updateImageMeasurements}
+          />
+          {interactionMode && (
+            <>
+              <span className="subtitle-canvas-guide vertical" style={{ left: position.left }} />
+              <span className="subtitle-canvas-guide horizontal" style={{ top: position.top }} />
+            </>
+          )}
+          <div
+            aria-label={`拖动字幕调整位置，拖动四角调整大小。当前位置横向 ${Math.round(effectiveStyle.positionX)}%，纵向 ${Math.round(effectiveStyle.positionY)}%，字号 ${effectiveStyle.fontSize}`}
+            className={`subtitle-edit-box ${interactionMode || ""}`}
+            role="button"
+            tabIndex="0"
+            title="拖动字幕移动；拖动四角调整大小"
+            style={{
+              ...position,
+              backgroundColor: `${effectiveStyle.backgroundColor}${backgroundAlpha}`,
+              color: effectiveStyle.textColor,
+              fontFamily: effectiveStyle.fontName,
+              fontSize: `${previewFontSize}px`,
+            }}
+            onKeyDown={handleKeyDown}
+            onPointerCancel={stopInteraction}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={stopInteraction}
+          >
+            <span className="subtitle-edit-text">{previewText}</span>
+            {["nw", "ne", "sw", "se"].map((handle) => (
+              <span
+                aria-hidden="true"
+                className={`subtitle-resize-handle ${handle}`}
+                data-resize-handle={handle}
+                key={handle}
+              />
+            ))}
+          </div>
         </div>
       </div>
       <figcaption>
@@ -887,8 +1063,10 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   const [translationStatus, setTranslationStatus] = useState(null);
   const [downstreamEnglishDubbing, setDownstreamEnglishDubbing] = useState(null);
   const [downstreamFinalVideo, setDownstreamFinalVideo] = useState(null);
+  const [downstreamFinalValidation, setDownstreamFinalValidation] = useState(null);
   const [workflowError, setWorkflowError] = useState("");
   const [editorCues, setEditorCues] = useState([]);
+  const [editorOriginalCues, setEditorOriginalCues] = useState([]);
   const [editorError, setEditorError] = useState("");
   const [editorMessage, setEditorMessage] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -898,6 +1076,9 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   const [openPathError, setOpenPathError] = useState("");
   const [workflowStarted, setWorkflowStarted] = useState(false);
   const [selectedPanel, setSelectedPanel] = useState("generateChinese");
+  const [deletingStage, setDeletingStage] = useState("");
+  const [stageDeleteMessage, setStageDeleteMessage] = useState("");
+  const [embeddedPanelVersion, setEmbeddedPanelVersion] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -929,6 +1110,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
       nextTranslationStatus,
       nextEnglishDubbing,
       nextFinalVideo,
+      nextFinalValidation,
     ] = await Promise.all([
       requestJson(`/api/videos/${record.id}/workflow/bs-roformer`),
       requestJson(`/api/videos/${record.id}/workflow/ocr-subtitles`),
@@ -937,6 +1119,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
       requestJson(`/api/videos/${record.id}/workflow/subtitle-editor`),
       requestJson(`/api/videos/${record.id}/workflow/english-dubbing-mix`),
       requestJson(`/api/videos/${record.id}/workflow/final-video`),
+      requestJson(`/api/videos/${record.id}/workflow/final-validation`),
     ]);
     setSeparation(nextSeparation);
     setOcr(nextOcr);
@@ -945,6 +1128,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     setTranslationStatus(nextTranslationStatus);
     setDownstreamEnglishDubbing(nextEnglishDubbing);
     setDownstreamFinalVideo(nextFinalVideo);
+    setDownstreamFinalValidation(nextFinalValidation);
     if (hasAutomaticWorkflowProgress({
       separation: nextSeparation,
       ocr: nextOcr,
@@ -966,7 +1150,9 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     setTranslationStatus(null);
     setDownstreamEnglishDubbing(null);
     setDownstreamFinalVideo(null);
+    setDownstreamFinalValidation(null);
     setEditorCues([]);
+    setEditorOriginalCues([]);
     setWorkflowStarted(false);
     setSelectedPanel("generateChinese");
     setWorkflowError("");
@@ -986,6 +1172,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
       finalSubtitles,
       downstreamEnglishDubbing,
       downstreamFinalVideo,
+      downstreamFinalValidation,
     ].some((task) => task?.status === "running");
     const interval = window.setInterval(() => {
       void refreshStatuses().catch((error) => setWorkflowError(error.message));
@@ -1003,6 +1190,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     finalSubtitles?.status,
     downstreamEnglishDubbing?.status,
     downstreamFinalVideo?.status,
+    downstreamFinalValidation?.status,
     refreshStatuses,
   ]);
 
@@ -1051,12 +1239,18 @@ function SimplifiedVideoPage({ videos, isLoading }) {
   useEffect(() => {
     if (!record || !finalSubtitles?.outputs?.srt?.ready) {
       setEditorCues([]);
+      setEditorOriginalCues([]);
       return undefined;
     }
     let active = true;
     setEditorError("");
     requestJson(`/api/videos/${record.id}/workflow/chinese-subtitle-editor`)
-      .then((result) => active && setEditorCues(result.cues || []))
+      .then((result) => {
+        if (active) {
+          setEditorCues(result.cues || []);
+          setEditorOriginalCues(result.cues || []);
+        }
+      })
       .catch((error) => active && setEditorError(error.message));
     return () => {
       active = false;
@@ -1101,6 +1295,26 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     setEditorMessage("");
   };
 
+  const applySpeakerToMatchingCues = (number) => {
+    const editedCue = editorCues.find((cue) => cue.number === number);
+    const sourceCue = editorOriginalCues.find((cue) => cue.number === number);
+    if (!editedCue || !sourceCue) {
+      return;
+    }
+    setEditorError("");
+    setEditorCues((current) =>
+      current.map((cue) => {
+        const original = editorOriginalCues.find((savedCue) => savedCue.number === cue.number);
+        return original?.speaker === sourceCue.speaker
+          ? { ...cue, speaker: editedCue.speaker }
+          : cue;
+      }),
+    );
+    setEditorMessage(
+      `已将说话人“${sourceCue.speaker || "未标注"}”统一替换为“${editedCue.speaker || "未标注"}”。`,
+    );
+  };
+
   const seekToCue = (cue) => {
     if (!videoRef.current) {
       return;
@@ -1122,6 +1336,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
         }),
       });
       setEditorCues(result.cues || []);
+      setEditorOriginalCues(result.cues || []);
       setEditorMessage("中文字幕已保存到最终 SRT。");
     } catch (error) {
       setEditorError(error.message);
@@ -1184,6 +1399,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     subtitleEditorComplete: translationStatus?.complete,
     englishDubbing: downstreamEnglishDubbing,
     finalVideo: downstreamFinalVideo,
+    finalValidation: downstreamFinalValidation,
   });
   const selectedOverviewStep = simplifiedOverview.steps.find((step) => step.id === selectedPanel);
   const canStartChineseWorkflow =
@@ -1204,6 +1420,89 @@ function SimplifiedVideoPage({ videos, isLoading }) {
       setWorkflowStarted(true);
     }
   };
+  const selectPanel = (panelId) => {
+    setStageDeleteMessage("");
+    setSelectedPanel(panelId);
+  };
+  const resetWorkflowArtifactsState = () => {
+    setEditorCues([]);
+    setEditorOriginalCues([]);
+    setWorkflowStarted(false);
+    setEmbeddedPanelVersion((version) => version + 1);
+  };
+  const deleteSelectedStageArtifacts = async () => {
+    const stageId = selectedOverviewStep?.id;
+    const stageTitle = selectedOverviewStep?.title || "当前步骤";
+    if (!stageId || !window.confirm(
+      `删除“${stageTitle}”当前步骤及其后续步骤的产物？\n\n原视频不会被删除。`,
+    )) {
+      return;
+    }
+    setDeletingStage(stageId);
+    setStageDeleteMessage("");
+    setWorkflowError("");
+    try {
+      const result = await requestJson(
+        `/api/videos/${record.id}/workflow/stages/${stageId}`,
+        { method: "DELETE" },
+      );
+      const resetsChineseWorkflow = ["generateChinese", "reviewChinese"].includes(stageId);
+      if (resetsChineseWorkflow) {
+        setEditorCues([]);
+        setEditorOriginalCues([]);
+        setWorkflowStarted(false);
+      }
+      await refreshStatuses();
+      if (resetsChineseWorkflow) {
+        setWorkflowStarted(false);
+      }
+      setEmbeddedPanelVersion((version) => version + 1);
+      setStageDeleteMessage(
+        result.deletedCount > 0
+          ? `已删除“${stageTitle}”及后续步骤产物。`
+          : `“${stageTitle}”没有可删除的产物。`,
+      );
+    } catch (error) {
+      setWorkflowError(`删除步骤产物失败：${error.message}`);
+    } finally {
+      setDeletingStage("");
+    }
+  };
+  const deleteAllArtifacts = async () => {
+    if (!window.confirm("删除当前项目的全部产物？\n\n原视频不会被删除。")) {
+      return;
+    }
+    setDeletingStage("all");
+    setStageDeleteMessage("");
+    setWorkflowError("");
+    try {
+      const result = await requestJson(
+        `/api/videos/${record.id}/workflow/stages/all`,
+        { method: "DELETE" },
+      );
+      resetWorkflowArtifactsState();
+      await refreshStatuses();
+      setWorkflowStarted(false);
+      setStageDeleteMessage(
+        result.deletedCount > 0
+          ? "已删除当前项目全部产物。"
+          : "当前项目没有可删除的产物。",
+      );
+    } catch (error) {
+      setWorkflowError(`删除全部产物失败：${error.message}`);
+    } finally {
+      setDeletingStage("");
+    }
+  };
+  const workflowRunning = [
+    separation,
+    ocr,
+    speakers,
+    finalSubtitles,
+    downstreamEnglishDubbing,
+    downstreamFinalVideo,
+    downstreamFinalValidation,
+  ].some((task) => task?.status === "running");
 
   return (
     <main className="detail-page simplified-detail-page">
@@ -1223,9 +1522,28 @@ function SimplifiedVideoPage({ videos, isLoading }) {
         overview={simplifiedOverview}
         nextDisabled={simplifiedNextDisabled}
         onRunNext={runSimplifiedOverviewNext}
-        onStepSelect={setSelectedPanel}
+        onStepSelect={selectPanel}
         selectedStepId={selectedPanel}
       />
+      <div className="stage-artifact-toolbar">
+        <span>{stageDeleteMessage}</span>
+        <button
+          className="danger-button compact"
+          disabled={Boolean(deletingStage) || workflowRunning}
+          type="button"
+          onClick={deleteSelectedStageArtifacts}
+        >
+          {deletingStage && deletingStage !== "all" ? "正在删除..." : "删除当前步骤产物"}
+        </button>
+        <button
+          className="danger-button compact ghost"
+          disabled={Boolean(deletingStage) || workflowRunning}
+          type="button"
+          onClick={deleteAllArtifacts}
+        >
+          {deletingStage === "all" ? "正在删除..." : "删除全部产物"}
+        </button>
+      </div>
 
       {selectedPanel === "generateChinese" && (
         <section className={`generation-panel ${workflowSummary.state}`} aria-label="生成中文字幕阶段详情">
@@ -1344,7 +1662,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
                         <strong>{String(cue.number).padStart(3, "0")}</strong>
                         <span>{cue.start} - {cue.end}</span>
                       </button>
-                      <label className="cue-speaker-field">
+                      <div className="cue-speaker-field">
                         <span>Speaker</span>
                         <input
                           aria-label={`第 ${cue.number} 条说话人`}
@@ -1354,7 +1672,14 @@ function SimplifiedVideoPage({ videos, isLoading }) {
                           value={cue.speaker || ""}
                           onChange={(event) => updateCueField(cue.number, "speaker", event.target.value)}
                         />
-                      </label>
+                        <button
+                          className="role-apply-button"
+                          type="button"
+                          onClick={() => applySpeakerToMatchingCues(cue.number)}
+                        >
+                          应用到同角色
+                        </button>
+                      </div>
                       <textarea
                         aria-label={`第 ${cue.number} 条中文字幕`}
                         rows={2}
@@ -1371,7 +1696,13 @@ function SimplifiedVideoPage({ videos, isLoading }) {
       )}
 
       {selectedPanel && !["generateChinese", "reviewChinese"].includes(selectedPanel) && (
-        <VideoPage videos={videos} isLoading={isLoading} embedded visiblePanel={selectedPanel} />
+        <VideoPage
+          key={`${selectedPanel}-${embeddedPanelVersion}`}
+          videos={videos}
+          isLoading={isLoading}
+          embedded
+          visiblePanel={selectedPanel}
+        />
       )}
     </main>
   );
@@ -1379,6 +1710,8 @@ function SimplifiedVideoPage({ videos, isLoading }) {
 
 function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null }) {
   const { videoId } = useParams();
+  const finalValidationVideoRef = useRef(null);
+  const validationResumeTimeRef = useRef(null);
   const [record, setRecord] = useState(null);
   const [notFound, setNotFound] = useState(false);
   const [isReplacingSource, setIsReplacingSource] = useState(false);
@@ -1407,13 +1740,25 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
   const [englishDubbing, setEnglishDubbing] = useState(null);
   const [englishDubbingError, setEnglishDubbingError] = useState("");
   const [isStartingEnglishDubbing, setIsStartingEnglishDubbing] = useState(false);
-  const [redubSegmentNumber, setRedubSegmentNumber] = useState("");
-  const [isStartingSingleRedub, setIsStartingSingleRedub] = useState(false);
+  const [selectedDubbingSegmentNumber, setSelectedDubbingSegmentNumber] = useState(null);
+  const [dubbingSegmentDraft, setDubbingSegmentDraft] = useState(null);
+  const [dubbingSegmentMessage, setDubbingSegmentMessage] = useState("");
+  const [isRegeneratingDubbingSegment, setIsRegeneratingDubbingSegment] = useState(false);
   const [finalVideo, setFinalVideo] = useState(null);
   const [finalVideoStyle, setFinalVideoStyle] = useState(defaultFinalVideoStyle);
   const [finalVideoError, setFinalVideoError] = useState("");
   const [isGeneratingFinalVideoPreview, setIsGeneratingFinalVideoPreview] = useState(false);
   const [isStartingFinalVideo, setIsStartingFinalVideo] = useState(false);
+  const [finalValidation, setFinalValidation] = useState(null);
+  const [finalValidationError, setFinalValidationError] = useState("");
+  const [isStartingFinalValidation, setIsStartingFinalValidation] = useState(false);
+  const [validationCurrentTime, setValidationCurrentTime] = useState(0);
+  const [validationRangeStart, setValidationRangeStart] = useState("");
+  const [validationRangeEnd, setValidationRangeEnd] = useState("");
+  const [sourceAudioRanges, setSourceAudioRanges] = useState([]);
+  const [mutedBackgroundRanges, setMutedBackgroundRanges] = useState([]);
+  const [validationDirty, setValidationDirty] = useState(false);
+  const [validationVideoVersion, setValidationVideoVersion] = useState(0);
   const [previewVersion, setPreviewVersion] = useState(0);
   const [openPathError, setOpenPathError] = useState("");
 
@@ -1469,6 +1814,7 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     setFinalSubtitles(null);
     setEnglishDubbing(null);
     setFinalVideo(null);
+    setFinalValidation(null);
     setFinalVideoStyle(defaultFinalVideoStyle);
     setSeparationError("");
     setSourceReplaceMessage("");
@@ -1484,7 +1830,18 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     setTranslationPromptText("");
     setIsImportingTranslationSrt(false);
     setEnglishDubbingError("");
+    setSelectedDubbingSegmentNumber(null);
+    setDubbingSegmentDraft(null);
+    setDubbingSegmentMessage("");
+    setIsRegeneratingDubbingSegment(false);
     setFinalVideoError("");
+    setFinalValidationError("");
+    setValidationCurrentTime(0);
+    setValidationRangeStart("");
+    setValidationRangeEnd("");
+    setSourceAudioRanges([]);
+    setMutedBackgroundRanges([]);
+    setValidationDirty(false);
     setOpenPathError("");
     requestJson(`/api/videos/${record.id}/workflow/bs-roformer`)
       .then((result) => {
@@ -1667,6 +2024,23 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
   }, [record, englishDubbing?.status]);
 
   useEffect(() => {
+    const segments = englishDubbing?.segments || [];
+    if (segments.length === 0) {
+      setSelectedDubbingSegmentNumber(null);
+      setDubbingSegmentDraft(null);
+      return;
+    }
+    const selected =
+      segments.find((segment) => segment.number === selectedDubbingSegmentNumber) || segments[0];
+    if (selected.number !== selectedDubbingSegmentNumber) {
+      setSelectedDubbingSegmentNumber(selected.number);
+    }
+    setDubbingSegmentDraft((draft) =>
+      draft?.number === selected.number ? draft : dubbingSegmentDraftFrom(selected),
+    );
+  }, [englishDubbing?.segments, selectedDubbingSegmentNumber]);
+
+  useEffect(() => {
     if (!record) {
       return undefined;
     }
@@ -1705,6 +2079,43 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     }, 1500);
     return () => window.clearInterval(interval);
   }, [record, finalVideo?.status]);
+
+  useEffect(() => {
+    if (!record) {
+      return undefined;
+    }
+    let active = true;
+    const readStatus = () => {
+      requestJson(`/api/videos/${record.id}/workflow/final-validation`)
+        .then((result) => {
+          if (!active) {
+            return;
+          }
+          setFinalValidation(result);
+          setSourceAudioRanges(result.configuration?.sourceAudioRanges || []);
+          setMutedBackgroundRanges(result.configuration?.mutedBackgroundRanges || []);
+          if (result.status === "completed" && finalValidation?.status === "running") {
+            setValidationVideoVersion(Date.now());
+          }
+          setFinalValidationError("");
+        })
+        .catch((error) => {
+          if (active) {
+            setFinalValidationError(error.message);
+          }
+        });
+    };
+    readStatus();
+    const interval = finalValidation?.status === "running"
+      ? window.setInterval(readStatus, 1500)
+      : null;
+    return () => {
+      active = false;
+      if (interval) {
+        window.clearInterval(interval);
+      }
+    };
+  }, [record, finalVideo?.status, finalValidation?.status]);
 
   const runSeparation = async () => {
     setIsStartingSeparation(true);
@@ -1770,8 +2181,6 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
   const subtitleEditorComplete =
     subtitleEditorCues.length > 0 &&
     subtitleEditorCues.every((cue) => cue.english.trim() || cue.skipped);
-  const completedEnglishCount = subtitleEditorCues.filter((cue) => cue.english.trim()).length;
-  const skippedEnglishCount = subtitleEditorCues.filter((cue) => cue.skipped).length;
   const pendingEnglishNumbers = subtitleEditorCues
     .filter((cue) => !cue.english.trim() && !cue.skipped)
     .map((cue) => String(cue.number).padStart(3, "0"));
@@ -1781,22 +2190,6 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
       finalSubtitles?.outputs?.srt?.path,
       finalSubtitles?.translationTarget?.jsonPath,
     );
-  const missingEnglishDubbingInputs = englishDubbing?.inputs
-    ? [
-      !englishDubbing.inputs.chineseTimelineSrt?.ready && "最终中文字幕",
-      !englishDubbing.inputs.englishDraftSrt?.ready && "英文字幕译稿",
-      !englishDubbing.inputs.dialogue?.ready && "DX 对白轨",
-      !englishDubbing.inputs.background?.ready && "MX+FX 背景底轨",
-    ].filter(Boolean)
-    : [];
-  const requestedRedubSegmentNumber = Number(redubSegmentNumber);
-  const canStartSingleRedub =
-    Number.isInteger(requestedRedubSegmentNumber) &&
-    requestedRedubSegmentNumber > 0 &&
-    englishDubbing?.canRedub &&
-    englishDubbing?.status !== "running" &&
-    record.storageMode === "reference";
-
   const updateSubtitleCue = (number, field, value) => {
     setSubtitleEditorMessage("");
     setSubtitleEditorError("");
@@ -1841,17 +2234,6 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     } catch {
       setSubtitleEditorError("复制提示词失败，请在展开的提示词框中手动复制。");
     }
-  };
-
-  const resetTranslationPrompt = () => {
-    setTranslationPromptText(
-      buildTranslationPrompt(
-        finalSubtitles?.outputs?.srt?.path,
-        finalSubtitles?.translationTarget?.jsonPath,
-      ),
-    );
-    setSubtitleEditorMessage("已恢复原始 Gemini 提示词。");
-    setSubtitleEditorError("");
   };
 
   const importTranslationSrt = async () => {
@@ -1930,6 +2312,64 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     }
   };
 
+  const regenerateDubbingSegment = async () => {
+    if (!selectedDubbingSegmentNumber || !dubbingSegmentDraft) {
+      return;
+    }
+    setIsRegeneratingDubbingSegment(true);
+    setEnglishDubbingError("");
+    setDubbingSegmentMessage("");
+    try {
+      const status = await requestJson(
+        `/api/videos/${record.id}/workflow/english-dubbing-mix/segments/${selectedDubbingSegmentNumber}/regenerate`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            speaker: dubbingSegmentDraft.speaker,
+            referenceAudioPath: dubbingSegmentDraft.referenceAudioPath,
+            text: dubbingSegmentDraft.text,
+          }),
+        },
+      );
+      setEnglishDubbing(status);
+      setDubbingSegmentMessage(
+        `第 ${String(selectedDubbingSegmentNumber).padStart(3, "0")} 条已提交重新配音，完成后会自动刷新整轨混音。`,
+      );
+    } catch (error) {
+      setEnglishDubbingError(error.message);
+    } finally {
+      setIsRegeneratingDubbingSegment(false);
+    }
+  };
+
+  const chooseDubbingReferenceAudio = async () => {
+    if (!selectedDubbingSegmentNumber || !dubbingSegmentDraft) {
+      return;
+    }
+    setEnglishDubbingError("");
+    setDubbingSegmentMessage("");
+    try {
+      const selected = await requestJson(
+        `/api/videos/${record.id}/workflow/english-dubbing-mix/reference-audio/select`,
+        { method: "POST" },
+      );
+      if (!selected?.path) {
+        return;
+      }
+      setDubbingSegmentDraft((draft) => draft && {
+        ...draft,
+        referenceAudioPath: selected.path,
+        referenceAudioName: selected.name || pathLeafName(selected.path),
+      });
+      setDubbingSegmentMessage(
+        `已选择参考音频：${selected.name || pathLeafName(selected.path)}。点击重新配音后生效。`,
+      );
+    } catch (error) {
+      setEnglishDubbingError(`选择参考音频失败：${error.message}`);
+    }
+  };
+
   const cancelWorkflow = async (workflow, statusPath, setStatus, setError) => {
     setCancellingWorkflow(workflow);
     setError("");
@@ -1945,25 +2385,20 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     }
   };
 
-  const runSingleEnglishDubbingRedub = async () => {
-    setIsStartingSingleRedub(true);
-    setEnglishDubbingError("");
-    try {
-      const status = await requestJson(`/api/videos/${record.id}/workflow/english-dubbing-mix/redub`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ segmentNumber: requestedRedubSegmentNumber }),
-      });
-      setEnglishDubbing(status);
-    } catch (error) {
-      setEnglishDubbingError(error.message);
-    } finally {
-      setIsStartingSingleRedub(false);
+  const persistFinalVideoStyle = useCallback((style) => {
+    if (!record) {
+      return;
     }
-  };
+    void requestJson(`/api/videos/${record.id}/workflow/final-video/style`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ style }),
+    }).catch((error) => setFinalVideoError(`保存字幕样式失败：${error.message}`));
+  }, [record]);
 
   const updateFinalVideoStyle = (field, value) => {
-    setFinalVideoStyle((style) => ({
+    setFinalVideoStyle((style) => {
+      const nextStyle = {
       ...style,
       [field]:
         field === "fontSize"
@@ -1971,14 +2406,21 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
           : field === "positionX" || field === "positionY"
             ? clampSubtitlePosition(value)
             : value,
-    }));
+      };
+      persistFinalVideoStyle(nextStyle);
+      return nextStyle;
+    });
   };
   const updateFinalVideoStyleValues = useCallback((values) => {
-    setFinalVideoStyle((style) => ({
-      ...style,
-      ...values,
-    }));
-  }, []);
+    setFinalVideoStyle((style) => {
+      const nextStyle = {
+        ...style,
+        ...values,
+      };
+      persistFinalVideoStyle(nextStyle);
+      return nextStyle;
+    });
+  }, [persistFinalVideoStyle]);
 
   const generateFinalVideoPreview = async () => {
     setIsGeneratingFinalVideoPreview(true);
@@ -2013,6 +2455,77 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     } finally {
       setIsStartingFinalVideo(false);
     }
+  };
+
+  const setValidationBoundary = (field) => {
+    const current = Number(finalValidationVideoRef.current?.currentTime || 0);
+    const value = current.toFixed(3);
+    setValidationCurrentTime(current);
+    if (field === "start") {
+      setValidationRangeStart(value);
+    } else {
+      setValidationRangeEnd(value);
+    }
+  };
+
+  const addValidationRange = (setRanges) => {
+    const start = Number(validationRangeStart);
+    const end = Number(validationRangeEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) {
+      setFinalValidationError("请输入有效时间段，结束时间必须晚于开始时间。");
+      return;
+    }
+    setRanges((ranges) => mergeTimelineRanges([...ranges, { start, end }]));
+    setFinalValidationError("");
+    setValidationRangeStart("");
+    setValidationRangeEnd("");
+    setValidationDirty(true);
+  };
+
+  const removeValidationRange = (setRanges, index) => {
+    setRanges((ranges) => ranges.filter((_, rangeIndex) => rangeIndex !== index));
+    setValidationDirty(true);
+  };
+
+  const runFinalValidation = async () => {
+    validationResumeTimeRef.current = Number(
+      finalValidationVideoRef.current?.currentTime || validationCurrentTime || 0,
+    );
+    setIsStartingFinalValidation(true);
+    setFinalValidationError("");
+    try {
+      const status = await requestJson(
+        `/api/videos/${record.id}/workflow/final-validation/run`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceAudioRanges,
+            mutedBackgroundRanges,
+          }),
+        },
+      );
+      setFinalValidation(status);
+      setValidationDirty(false);
+    } catch (error) {
+      setFinalValidationError(error.message);
+    } finally {
+      setIsStartingFinalValidation(false);
+    }
+  };
+
+  const restoreFinalValidationPlaybackTime = (event) => {
+    const resumeTime = validationResumeTimeRef.current;
+    if (!Number.isFinite(resumeTime) || resumeTime <= 0) {
+      return;
+    }
+    const duration = Number(event.currentTarget.duration);
+    const nextTime = Number.isFinite(duration)
+      ? Math.min(resumeTime, Math.max(0, duration - 0.05))
+      : resumeTime;
+    event.currentTarget.currentTime = nextTime;
+    setValidationCurrentTime(nextTime);
+    validationResumeTimeRef.current = null;
   };
 
   const replaceProjectSource = async () => {
@@ -2072,6 +2585,11 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     englishDubbing,
     finalVideo,
   });
+  const dubbingSegments = englishDubbing?.segments || [];
+  const selectedDubbingSegment =
+    dubbingSegments.find((segment) => segment.number === selectedDubbingSegmentNumber) ||
+    dubbingSegments[0] ||
+    null;
   const scrollToWorkflowStep = (stepId) => {
     document.getElementById(`workflow-step-${stepId}`)?.scrollIntoView({
       behavior: "smooth",
@@ -2125,24 +2643,6 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
     };
     handlers[actionId]?.();
   };
-  const embeddedPanelCopy = {
-    translation: {
-      title: "翻译校对",
-      detail: "基于最终中文字幕生成并校对英文显示字幕和配音分段建议。",
-    },
-    englishDubbing: {
-      title: "英文配音",
-      detail: "生成 VoxCPM 英文配音、混音，并支持单条重新配音。",
-    },
-    finalVideo: {
-      title: "导出成片",
-      detail: "确认英文字幕样式后，替换音轨并输出最终英文成片。",
-    },
-  }[visiblePanel] || {
-    title: "英文翻译、配音与成片",
-    detail: "中文字幕确认后，继续完成英文译稿、VoxCPM 配音混音和最终成片导出。",
-  };
-
   const PageContainer = embedded ? "section" : "main";
 
   return (
@@ -2150,13 +2650,7 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
       className={`detail-page ${embedded ? "embedded-production-flow" : ""}`}
       aria-label={embedded ? "完整制作流程" : undefined}
     >
-      {embedded ? (
-        <header className="embedded-production-heading">
-          <p className="eyebrow">当前阶段</p>
-          <h2>{embeddedPanelCopy.title}</h2>
-          <p>{embeddedPanelCopy.detail}</p>
-        </header>
-      ) : (
+      {!embedded && (
         <>
           <header className="detail-header">
             <div>
@@ -2509,51 +3003,20 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
               </div>
             )}
             <div className="workflow-card manual-step" id="workflow-step-translation">
-              <p className="eyebrow">步骤 05</p>
-              <h2>角色校对与英文翻译</h2>
-              <p>将最终中文字幕文件交给 Gemini 生成 JSON：逐条英文显示字幕和整句配音分段建议。读取后可校对角色与译文，配音阶段会按整句时间窗切割原始对白作为参考音色。</p>
-              <div className={`step-status ${canTranslate ? "ready" : "blocked"}`}>
-                <strong>{canTranslate ? "可以翻译与校对" : "等待最终中文字幕"}</strong>
-                <small>
-                  {canTranslate
-                    ? subtitleEditorComplete
-                      ? "英文译稿已解析，可继续校对并保存后进入英文配音。"
-                      : "复制提示词交给 Gemini 生成 JSON，再读取文件并校对。"
-                    : "请先完成步骤 04，生成最终中文字幕 SRT。"}
-                </small>
-              </div>
+              <h2>翻译校对</h2>
               {canTranslate && subtitleEditor?.canEdit && (
                 <>
-                  <div className="subtitle-editor-summary">
-                    <strong>{subtitleEditorCues.length} 条字幕</strong>
-                    <span>已填写英文 {completedEnglishCount} 条</span>
-                    <span>已跳过 {skippedEnglishCount} 条</span>
-                    <span>时间码只读</span>
-                  </div>
                   {pendingEnglishNumbers.length > 0 && (
                     <p className="subtitle-editor-missing">
                       待处理英文：{pendingEnglishNumbers.join("、")}
                     </p>
                   )}
-                  {skippedEnglishCount > 0 && (
-                    <p className="subtitle-editor-skip-hint">
-                      留空条目会在保存时视为跳过，不会阻塞后续配音流程。
-                    </p>
-                  )}
                   {subtitleEditor.draftError && <p className="workflow-error">{subtitleEditor.draftError}</p>}
                   <section className="translation-assistant-panel" aria-label="Gemini 翻译提示词">
-                    <div>
-                      <strong>Gemini 文件翻译提示词</strong>
-                      <p>
-                        提示词可编辑，要求 Gemini 读取中文字幕 SRT，并输出包含显示字幕与整句配音分段建议的 JSON。复制按钮会复制当前内容。
-                      </p>
-                    </div>
+                    <strong>Gemini 翻译提示词</strong>
                     <div className="translation-assistant-actions">
                       <button className="secondary-button compact" type="button" onClick={copyTranslationPrompt}>
                         复制当前提示词
-                      </button>
-                      <button className="secondary-button compact" type="button" onClick={resetTranslationPrompt}>
-                        恢复原始提示词
                       </button>
                       <button
                         className="secondary-button compact"
@@ -2572,25 +3035,7 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
                       />
                     )}
                   </section>
-                  <section className="translation-file-panel" aria-label="字幕文件交接">
-                    <div className="track-results">
-                      <FileResult
-                        artifactKey="finalSubtitles.srt"
-                        label="Gemini 输入：最终中文字幕 SRT"
-                        file={finalSubtitles.outputs.srt}
-                        onOpen={openPath}
-                        readyText="已就绪"
-                      />
-                      <FileResult
-                        artifactKey="translation.geminiJson"
-                        label="Gemini 输出：翻译与整句分段 JSON"
-                        file={{
-                          path: finalSubtitles.translationTarget.jsonPath,
-                          ready: finalSubtitles.translationTarget.jsonReady,
-                        }}
-                        onOpen={openPath}
-                      />
-                    </div>
+                  <section className="translation-import-panel" aria-label="读取 Gemini 翻译">
                     <button
                       className="secondary-button compact"
                       disabled={isImportingTranslationSrt}
@@ -2684,9 +3129,7 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
         {(!embedded || visiblePanel === "englishDubbing") && (
           <WorkflowStageSection group={workflowStageById.dubbing}>
             <div className="workflow-card manual-step" id="workflow-step-englishDubbing">
-              <p className="eyebrow">步骤 06</p>
-              <h2>VoxCPM 英文配音与混音</h2>
-              <p>先将英文译稿同步到主时间轴并预检，再使用 VoxCPM 仅更新受影响配音片段，最后与 MX+FX 背景底轨混音。</p>
+              <h2>英文配音</h2>
               <div className={`step-status ${englishDubbing?.status || "blocked"}`}>
                 <strong>
                   {englishDubbing?.status === "running" &&
@@ -2703,7 +3146,7 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
                     "正在使用 VoxCPM 生成英文配音"}
                   {englishDubbing?.status === "running" &&
                     englishDubbing.stage === "redubbing" &&
-                    `正在重新配音第 ${String(englishDubbing.redubSegmentNumber || "").padStart(3, "0")} 段`}
+                    `正在重新配音第 ${String(englishDubbing.activeSegmentNumber || "").padStart(3, "0")} 条`}
                   {englishDubbing?.status === "running" &&
                     englishDubbing.stage === "mixing" &&
                     "正在合成英文混音"}
@@ -2711,52 +3154,11 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
                   {englishDubbing?.status === "failed" && "处理失败"}
                   {englishDubbing?.status === "cancelled" && "已取消"}
                   {englishDubbing?.status === "unavailable" && "不可执行"}
-                  {(!englishDubbing || englishDubbing.status === "blocked") &&
-                    (missingEnglishDubbingInputs.length > 0 ? "等待必要输入就绪" : "等待英文字幕与音轨")}
+                  {(!englishDubbing || englishDubbing.status === "blocked") && "等待英文字幕与音轨"}
                   {englishDubbing?.status === "ready" && "可以开始"}
                 </strong>
-                <small>
-                  {englishDubbing?.status === "running"
-                    ? "任务包含字幕预检、分段切割、增量配音和整轨混音，页面会自动刷新状态。"
-                    : englishDubbing?.status === "cancelled"
-                      ? "任务已取消，可以重新执行。已生成且未过期的片段会继续复用。"
-                      : englishDubbing?.canRun
-                        ? englishDubbing?.mixOutdated
-                          ? "译稿或素材已变化，需要重新生成英文混音。"
-                          : "英文译稿、主时间轴与所需音轨已齐全，留空条目会自动跳过。"
-                        : missingEnglishDubbingInputs.length > 0
-                          ? `缺少：${missingEnglishDubbingInputs.join("、")}。留空条目会自动跳过。`
-                          : "需存在英文字幕译稿、最终中文字幕、DX 对白轨与 MX+FX 背景底轨。"}
-                </small>
               </div>
               <DubbingProgress progress={englishDubbing?.dubbingProgress} />
-              {englishDubbing?.inputs && (
-                <div className="track-results input-results">
-                  <FileResult artifactKey="finalSubtitles.srt" label="最终中文字幕（主时间轴）" file={englishDubbing.inputs.chineseTimelineSrt} onOpen={openPath} readyText="已就绪" />
-                  <FileResult artifactKey="translation.englishDraftSrt" label="英文字幕译稿" file={englishDubbing.inputs.englishDraftSrt} onOpen={openPath} readyText="已就绪" />
-                  <FileResult artifactKey="bsRoformer.dialogue" label="DX 对白轨" file={englishDubbing.inputs.dialogue} onOpen={openPath} readyText="已就绪" />
-                  <FileResult artifactKey="bsRoformer.background" label="MX+FX 背景底轨" file={englishDubbing.inputs.background} onOpen={openPath} readyText="已就绪" />
-                </div>
-              )}
-              <DirectoryResult
-                artifactKey="englishDubbing.workDirectory"
-                label="工作目录"
-                path={englishDubbing?.workDirectory}
-                ready={englishDubbing?.workDirectoryReady}
-                onOpen={openPath}
-              />
-              {englishDubbing?.outputs && (
-                <div className="track-results">
-                  <FileResult artifactKey="translation.controlledEnglishSrt" label="受控英文字幕 SRT" file={englishDubbing.outputs.controlledEnglishSrt} onOpen={openPath} />
-                  <FileResult artifactKey="translation.preflightReport" label="英文字幕预检报告" file={englishDubbing.outputs.preflightReport} onOpen={openPath} />
-                  <FileResult artifactKey="englishDubbing.dubbingGroupsCsv" label="英文配音整句分段清单" file={englishDubbing.outputs.dubbingGroupsCsv} onOpen={openPath} />
-                  <FileResult artifactKey="englishDubbing.dubbingGroupsReport" label="英文配音整句分段报告" file={englishDubbing.outputs.dubbingGroupsReport} onOpen={openPath} />
-                  <FileResult artifactKey="englishDubbing.segmentManifest" label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
-                  <FileResult artifactKey="englishDubbing.dialogueTrack" label="英文对白整轨" file={englishDubbing.outputs.dialogueTrack} onOpen={openPath} />
-                  <FileResult artifactKey="englishDubbing.mixedTrack" label="英文成片混音 MX+FX" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
-                  <FileResult artifactKey="englishDubbing.assemblyReport" label="英文整轨合成结果" file={englishDubbing.outputs.assemblyReport} onOpen={openPath} />
-                </div>
-              )}
               {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
               {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
               <button
@@ -2788,105 +3190,45 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
                   )
                 }
               />
-            </div>
-            <div className="workflow-card manual-step redub-step">
-              <p className="eyebrow">步骤 07</p>
-              <h2>单条重新配音</h2>
-              <p>输入英文配音分段清单中的编号，只重新生成这一条 VoxCPM 配音，并自动重新合成英文混音。</p>
-              <div className={`step-status ${englishDubbing?.canRedub ? "ready" : "blocked"}`}>
-                <strong>
-                  {englishDubbing?.status === "running" &&
-                    englishDubbing.stage === "redubbing" &&
-                    `正在重新配音第 ${String(englishDubbing.redubSegmentNumber || "").padStart(3, "0")} 段`}
-                  {englishDubbing?.status === "running" &&
-                    englishDubbing.stage === "mixing" &&
-                    "正在重新合成英文混音"}
-                  {englishDubbing?.status !== "running" &&
-                    englishDubbing?.canRedub &&
-                    "可以单条重新配音"}
-                  {englishDubbing?.status !== "running" &&
-                    !englishDubbing?.canRedub &&
-                    "等待完整英文混音"}
-                </strong>
-                <small>
-                  {englishDubbing?.status === "running"
-                    ? "单条重配音任务完成后，英文混音会自动更新，最终成片需在步骤 08 重新生成。"
-                    : englishDubbing?.canRedub
-                      ? "编号来自步骤 06 的“英文配音分段清单”或 VoxCPM 试听报告。"
-                      : "请先完成步骤 06，且当前英文混音不能处于过期状态。"}
-                </small>
-              </div>
-              <section className="single-redub-panel" aria-label="单条重新配音">
-                <label className="single-redub-field">
-                  <span>配音分段编号</span>
-                  <input
-                    min="1"
-                    placeholder="例如 12"
-                    type="number"
-                    value={redubSegmentNumber}
-                    onChange={(event) => setRedubSegmentNumber(event.target.value)}
-                  />
-                </label>
-                <button
-                  className="primary-button single-redub-action"
-                  disabled={isStartingSingleRedub || !canStartSingleRedub}
-                  type="button"
-                  onClick={runSingleEnglishDubbingRedub}
-                >
-                  {isStartingSingleRedub ? "正在启动..." : "重新配音这一条"}
-                </button>
-              </section>
-              {englishDubbing?.outputs && (
-                <div className="track-results">
-                  <FileResult artifactKey="englishDubbing.segmentManifest" label="英文配音分段清单" file={englishDubbing.outputs.segmentManifest} onOpen={openPath} />
-                  <FileResult artifactKey="englishDubbing.dubbingReport" label="VoxCPM 试听报告" file={englishDubbing.outputs.dubbingReport} onOpen={openPath} />
-                  <FileResult artifactKey="englishDubbing.mixedTrack" label="更新后的英文混音" file={englishDubbing.outputs.mixedTrack} onOpen={openPath} />
-                </div>
-              )}
-              {englishDubbingError && <p className="workflow-error">{englishDubbingError}</p>}
-              {englishDubbing?.error && <p className="workflow-error">{englishDubbing.error}</p>}
+              <DubbingSegmentEditorPanel
+                segments={dubbingSegments}
+                selectedSegment={selectedDubbingSegment}
+                draft={dubbingSegmentDraft}
+                message={dubbingSegmentMessage}
+                versionKey={englishDubbing?.finishedAt || englishDubbing?.startedAt || ""}
+                disabled={englishDubbing?.status === "running" || record.storageMode !== "reference"}
+                busy={isRegeneratingDubbingSegment}
+                onSelect={(segment) => {
+                  setSelectedDubbingSegmentNumber(segment.number);
+                  setDubbingSegmentDraft(dubbingSegmentDraftFrom(segment));
+                  setDubbingSegmentMessage("");
+                }}
+                onDraftChange={setDubbingSegmentDraft}
+                onChooseReferenceAudio={chooseDubbingReferenceAudio}
+                onRegenerate={regenerateDubbingSegment}
+              />
             </div>
           </WorkflowStageSection>
         )}
         {(!embedded || visiblePanel === "finalVideo") && (
           <WorkflowStageSection group={workflowStageById.delivery}>
             <div className="workflow-card manual-step final-video-step" id="workflow-step-finalVideo">
-              <p className="eyebrow">步骤 08</p>
-              <h2>替换英文音轨并烧录字幕</h2>
-              <p>用英文成片混音替换原视频音频，并将受控英文字幕按所选样式烧录到视频中，输出最终英文成片。</p>
-              <div className={`step-status ${finalVideo?.status || "blocked"}`}>
-                <strong>
-                  {finalVideo?.status === "running" && "正在生成最终成片"}
-                  {finalVideo?.status === "completed" && "最终英文成片已生成"}
-                  {finalVideo?.status === "failed" && "成片生成失败"}
-                  {finalVideo?.status === "cancelled" && "已取消"}
-                  {finalVideo?.status === "unavailable" && "不可执行"}
-                  {(!finalVideo || finalVideo.status === "blocked") && "等待英文混音与字幕"}
-                  {finalVideo?.status === "ready" && "可以开始"}
-                </strong>
-                <small>
-                  {finalVideo?.status === "running"
-                    ? "正在编码视频、烧录字幕并替换音频，页面会自动刷新状态。"
-                    : finalVideo?.status === "cancelled"
-                      ? "任务已取消，可以按当前样式重新生成。"
-                      : finalVideo?.status === "failed"
-                        ? "最终成片上次生成失败，可以查看错误信息后重新生成。"
-                        : finalVideo?.canRun
-                          ? "受控英文字幕与英文成片混音已齐全，可先生成参考帧确认样式。"
-                          : "需先完成步骤 06/07 的字幕预检与英文成片混音。"}
-                </small>
-              </div>
-              {finalVideo?.inputs && (
-                <div className="track-results input-results final-input-results">
-                  <FileResult artifactKey="source.video" label="原视频画面" file={finalVideo.inputs.video} onOpen={openPath} readyText="已就绪" />
-                  <FileResult artifactKey="translation.controlledEnglishSrt" label="受控英文字幕 SRT" file={finalVideo.inputs.subtitle} onOpen={openPath} readyText="已就绪" />
-                  <FileResult artifactKey="englishDubbing.mixedTrack" label="替换音轨：英文成片混音" file={finalVideo.inputs.audio} onOpen={openPath} readyText="已就绪" />
+              <h2>导出成片</h2>
+              {finalVideo?.status !== "ready" && (
+                <div className={`step-status ${finalVideo?.status || "blocked"}`}>
+                  <strong>
+                    {finalVideo?.status === "running" && "正在生成最终成片"}
+                    {finalVideo?.status === "completed" && "最终英文成片已生成"}
+                    {finalVideo?.status === "failed" && "成片生成失败"}
+                    {finalVideo?.status === "cancelled" && "已取消"}
+                    {finalVideo?.status === "unavailable" && "不可执行"}
+                    {(!finalVideo || finalVideo.status === "blocked") && "等待英文混音与字幕"}
+                  </strong>
                 </div>
               )}
               <section className="subtitle-style-panel" aria-label="英文字幕样式设置">
                 <div className="style-panel-heading">
                   <strong>字幕样式</strong>
-                  <small>在画面中直接拖动字幕并调整大小，生成最终视频时直接采用当前参数。</small>
                 </div>
                 <div className="style-controls">
                   <label className="style-field font-field">
@@ -2977,20 +3319,6 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
                   </div>
                 )}
               </section>
-              <DirectoryResult
-                artifactKey="finalVideo.outputDirectory"
-                label="最终成片输出目录"
-                path={finalVideo?.outputDirectory}
-                ready={finalVideo?.outputDirectoryReady}
-                onOpen={openPath}
-              />
-              {finalVideo?.outputs && (
-                <div className="track-results">
-                  <FileResult artifactKey="finalVideo.styledAss" label="成片字幕 ASS" file={finalVideo.outputs.styledAss} onOpen={openPath} />
-                  <FileResult artifactKey="finalVideo.video" label="最终英文成片 MP4" file={finalVideo.outputs.video} onOpen={openPath} />
-                  <FileResult artifactKey="finalVideo.report" label="成片结果报告" file={finalVideo.outputs.report} onOpen={openPath} />
-                </div>
-              )}
               {finalVideoError && <p className="workflow-error">{finalVideoError}</p>}
               {finalVideo?.error && <p className="workflow-error">{finalVideo.error}</p>}
               <button
@@ -3019,6 +3347,193 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
                     "final-video",
                     setFinalVideo,
                     setFinalVideoError,
+                  )
+                }
+              />
+            </div>
+          </WorkflowStageSection>
+        )}
+        {(!embedded || visiblePanel === "finalValidation") && (
+          <WorkflowStageSection group={workflowStageById.validation}>
+            <div
+              className="workflow-card manual-step final-validation-step"
+              id="workflow-step-finalValidation"
+            >
+              <h2>最终验证</h2>
+              {finalVideo?.outputs?.video?.ready ? (
+                <>
+                  <section className="final-video-player-shell" aria-label="最终成片播放器">
+                    <video
+                      ref={finalValidationVideoRef}
+                      className="final-video-player"
+                      controls
+                      preload="metadata"
+                      src={`/api/videos/${record.id}/workflow/final-validation/content?v=${finalValidation?.finishedAt || validationVideoVersion || finalVideo.finishedAt || ""}`}
+                      onLoadedMetadata={restoreFinalValidationPlaybackTime}
+                      onTimeUpdate={(event) => setValidationCurrentTime(event.currentTarget.currentTime)}
+                    >
+                      当前环境不支持视频播放。
+                    </video>
+                  </section>
+
+                  <section className="validation-range-editor" aria-label="最终验证时间段设置">
+                    <div className="validation-time-readout">
+                      <span>当前播放位置</span>
+                      <strong>{formatTimelineSeconds(validationCurrentTime)}</strong>
+                    </div>
+                    <div className="validation-boundary-controls">
+                      <label>
+                        <span>开始时间（秒）</span>
+                        <input
+                          min="0"
+                          step="0.001"
+                          type="number"
+                          value={validationRangeStart}
+                          onChange={(event) => setValidationRangeStart(event.target.value)}
+                        />
+                        <button
+                          className="secondary-button compact"
+                          type="button"
+                          onClick={() => setValidationBoundary("start")}
+                        >
+                          设为开始
+                        </button>
+                      </label>
+                      <label>
+                        <span>结束时间（秒）</span>
+                        <input
+                          min="0"
+                          step="0.001"
+                          type="number"
+                          value={validationRangeEnd}
+                          onChange={(event) => setValidationRangeEnd(event.target.value)}
+                        />
+                        <button
+                          className="secondary-button compact"
+                          type="button"
+                          onClick={() => setValidationBoundary("end")}
+                        >
+                          设为结束
+                        </button>
+                      </label>
+                    </div>
+
+                    <div className="validation-range-columns">
+                      <section className="validation-range-panel">
+                        <header>
+                          <div>
+                            <strong>使用原视频音频</strong>
+                            <span>该时间段直接使用原视频声音，覆盖英文混音。</span>
+                          </div>
+                          <button
+                            className="secondary-button compact"
+                            type="button"
+                            onClick={() => addValidationRange(setSourceAudioRanges)}
+                          >
+                            添加时间段
+                          </button>
+                        </header>
+                        {sourceAudioRanges.length === 0 ? (
+                          <p>暂无时间段</p>
+                        ) : (
+                          <ol>
+                            {sourceAudioRanges.map((range, index) => (
+                              <li key={`${range.start}-${range.end}`}>
+                                <span>
+                                  {formatTimelineSeconds(range.start)} - {formatTimelineSeconds(range.end)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeValidationRange(setSourceAudioRanges, index)}
+                                >
+                                  删除
+                                </button>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </section>
+
+                      <section className="validation-range-panel">
+                        <header>
+                          <div>
+                            <strong>清除 MX+FX 背景底轨</strong>
+                            <span>该时间段静音无对白背景底轨，保留英文对白。</span>
+                          </div>
+                          <button
+                            className="secondary-button compact"
+                            type="button"
+                            onClick={() => addValidationRange(setMutedBackgroundRanges)}
+                          >
+                            添加时间段
+                          </button>
+                        </header>
+                        {mutedBackgroundRanges.length === 0 ? (
+                          <p>暂无时间段</p>
+                        ) : (
+                          <ol>
+                            {mutedBackgroundRanges.map((range, index) => (
+                              <li key={`${range.start}-${range.end}`}>
+                                <span>
+                                  {formatTimelineSeconds(range.start)} - {formatTimelineSeconds(range.end)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => removeValidationRange(setMutedBackgroundRanges, index)}
+                                >
+                                  删除
+                                </button>
+                              </li>
+                            ))}
+                          </ol>
+                        )}
+                      </section>
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <p className="copy-status">请先在第五步生成最终成片。</p>
+              )}
+
+              {finalValidation?.status === "running" && (
+                <div className="step-status running"><strong>正在生成验证成片</strong></div>
+              )}
+              {validationDirty && (
+                <p className="copy-status">时间段已修改，点击下方按钮应用到最终成片。</p>
+              )}
+              {finalValidation?.status === "completed" && !validationDirty && (
+                <div className="step-status completed"><strong>最终验证成片已生成</strong></div>
+              )}
+              {finalValidationError && <p className="workflow-error">{finalValidationError}</p>}
+              {finalValidation?.error && <p className="workflow-error">{finalValidation.error}</p>}
+              <button
+                className="primary-button workflow-action"
+                disabled={
+                  isStartingFinalValidation ||
+                  finalValidation?.status === "running" ||
+                  !finalValidation?.canRun ||
+                  record.storageMode !== "reference"
+                }
+                type="button"
+                onClick={runFinalValidation}
+              >
+                {finalValidation?.status === "running"
+                  ? "合成中..."
+                  : validationDirty
+                    ? "应用修改并重新生成"
+                    : finalValidation?.status === "completed"
+                    ? "按当前时间段重新生成"
+                    : "生成最终验证成片"}
+              </button>
+              <CancelTaskButton
+                busy={cancellingWorkflow === "final-validation"}
+                visible={finalValidation?.status === "running"}
+                onClick={() =>
+                  cancelWorkflow(
+                    "final-validation",
+                    "final-validation",
+                    setFinalValidation,
+                    setFinalValidationError,
                   )
                 }
               />

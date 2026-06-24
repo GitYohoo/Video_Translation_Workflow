@@ -56,6 +56,14 @@ const primarySteps = [
     completedLabel: "英文成片已完成",
     blockedLabel: "等待英文混音与字幕",
   },
+  {
+    id: "finalValidation",
+    title: "最终验证",
+    readyLabel: "开始最终验证",
+    runningLabel: "正在生成验证成片",
+    completedLabel: "最终验证已完成",
+    blockedLabel: "等待最终成片",
+  },
 ];
 
 export const workflowStageGroups = [
@@ -77,7 +85,7 @@ export const workflowStageGroups = [
     id: "dubbing",
     eyebrow: "阶段 03",
     title: "英文配音",
-    description: "生成英文配音和成片混音，必要时只重配一条并自动更新混音。",
+    description: "生成英文配音和成片混音。",
     stepIds: ["englishDubbing"],
   },
   {
@@ -86,6 +94,13 @@ export const workflowStageGroups = [
     title: "成片导出",
     description: "确认字幕样式后替换英文音轨，烧录字幕并输出最终英文成片。",
     stepIds: ["finalVideo"],
+  },
+  {
+    id: "validation",
+    eyebrow: "阶段 05",
+    title: "最终验证",
+    description: "播放最终成片，并按时间段替换原声或清除 MX+FX 背景底轨。",
+    stepIds: ["finalValidation"],
   },
 ];
 
@@ -98,6 +113,10 @@ function statusForStep(input, step) {
       return "completed";
     }
     return input.canTranslate ? "ready" : "blocked";
+  }
+  if (step.id === "finalValidation") {
+    return input.finalValidation?.status ||
+      (input.finalVideo?.status === "completed" ? "ready" : "blocked");
   }
   const status = input[step.id]?.status;
   if (status) {

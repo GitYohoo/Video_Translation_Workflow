@@ -4,6 +4,7 @@ import {
   clampSubtitleFontSize,
   clampSubtitlePosition,
   fontSizeFromResize,
+  subtitlePreviewFontSize,
   subtitlePositionFromDrag,
   subtitlePositionFromPointer,
   subtitlePositionStyle,
@@ -47,6 +48,12 @@ test("converts normalized subtitle coordinates into preview styles", () => {
     left: "37.25%",
     top: "81.5%",
   });
+});
+
+test("scales preview subtitle font by displayed source video height", () => {
+  assert.equal(subtitlePreviewFontSize(44, 640, 1280), 22);
+  assert.equal(subtitlePreviewFontSize(44, 0, 1280), 44);
+  assert.equal(subtitlePreviewFontSize(10, 100, 1280), 8);
 });
 
 test("resizes subtitle font from a corner drag and keeps renderer limits", () => {

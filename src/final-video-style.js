@@ -86,6 +86,15 @@ export function subtitlePositionStyle(positionX, positionY) {
   };
 }
 
+export function subtitlePreviewFontSize(fontSize, displayHeight, sourceHeight) {
+  const source = Number(sourceHeight);
+  const displayed = Number(displayHeight);
+  if (!Number.isFinite(source) || source <= 0 || !Number.isFinite(displayed) || displayed <= 0) {
+    return clampSubtitleFontSize(fontSize);
+  }
+  return Math.max(8, clampSubtitleFontSize(fontSize) * (displayed / source));
+}
+
 export function fontSizeFromResize(startFontSize, startDistance, currentDistance) {
   const initialDistance = Number(startDistance);
   const nextDistance = Number(currentDistance);

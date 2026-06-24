@@ -1,265 +1,253 @@
-# 🎬 影译工坊 - Video Translation Workshop
-
-面向本地视频翻译制作流程的端到端自动化桌面工作台  
-*An end-to-end automated desktop workbench for local video translation and post-production workflows.*
-
----
+# 🎬 影译工坊 / Video Translation Workshop
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-0.2.14-blue.svg?style=flat-square" alt="Version">
-  <img src="https://img.shields.io/badge/Electron-42.4.0-purple.svg?style=flat-square" alt="Electron">
-  <img src="https://img.shields.io/badge/React-19.1.0-61dafb.svg?style=flat-square" alt="React">
-  <img src="https://img.shields.io/badge/Express-5.1.0-green.svg?style=flat-square" alt="Express">
-  <img src="https://img.shields.io/badge/Python-AI%2FML-blueviolet.svg?style=flat-square" alt="Python">
+  <img src="https://img.shields.io/badge/Version-0.2.19-blue.svg?style=flat-square" alt="Version 0.2.19">
+  <img src="https://img.shields.io/badge/Platform-Windows-0078d4.svg?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/Electron-42.4.0-purple.svg?style=flat-square" alt="Electron 42.4.0">
+  <img src="https://img.shields.io/badge/React-19.1.0-61dafb.svg?style=flat-square" alt="React 19.1.0">
+  <img src="https://img.shields.io/badge/Express-5.1.0-green.svg?style=flat-square" alt="Express 5.1.0">
 </p>
 
----
+<p align="center">
+  面向中文源视频的本地翻译、字幕校对、英文配音与成片导出桌面工作台。
+  <br>
+  A local-first desktop workbench for Chinese video translation, subtitle review, English dubbing, and final rendering.
+</p>
 
-## 📖 关于项目 / About The Project
+> [!IMPORTANT]
+> 项目目前主要面向 Windows 和 NVIDIA CUDA 环境，仍属于个人工作流工具，不是开箱即用的云服务。AI 模型、Python 环境、FFmpeg 和 Hugging Face 访问权限需要按本机环境配置。
 
-<details open>
-<summary>🇨🇳 <b>中文介绍</b></summary>
-<br>
+## 项目能力
 
-**影译工坊 (Video Translation Workshop)** 是一款专为本地化音视频翻译设计的桌面应用程序。它整合了尖端的 AI 语音与多媒体技术，实现了从“中文源视频”到“带英文字幕与角色配音的高质量成品视频”的完整闭环，极大地简化了复杂的视频翻译制作工序。
+影译工坊把视频翻译制作拆分为可检查、可重试的本地任务：
 
-</details>
+1. 使用 BS-RoFormer 分离对白轨与背景音乐/音效轨。
+2. 使用 PaddleOCR 从画面提取烧录中文字幕。
+3. 使用 WhisperX 识别对白并标记说话人。
+4. 合并、校对并保存最终中文字幕。
+5. 生成 Gemini 翻译提示词，手动导入翻译与配音分段 JSON。
+6. 使用 VoxCPM 合成英文配音，支持单条重新配音。
+7. 混合英文对白与背景轨，烧录英文字幕并导出 MP4。
+8. 支持按时间段微修最终成片。
 
-<details open>
-<summary>🇺🇸 <b>English Description</b></summary>
-<br>
+主要任务由 Express 后端统一调度，React 界面展示状态，Electron 提供 Windows 桌面外壳。长任务状态、日志和生成产物会保留，应用重启后仍可检查。
 
-**Video Translation Workshop (影译工坊)** is a comprehensive desktop application tailored for local audio and video translation workflows. Integrating cutting-edge AI speech and multimedia technologies, it automates the transition from a Chinese source video to a high-quality finished video with English subtitles and character-matching voiceovers.
 
-</details>
+## 隐私与联网边界
 
----
+音频分离、OCR、说话人识别、配音和视频渲染默认在本机执行。以下操作可能联网：
 
-## ✨ 核心特性 / Core Features
+- 首次安装 npm、Python 或模型依赖。
+- 从 Hugging Face、ModelScope 等服务下载模型。
+- 用户主动把中文字幕或提示词提交给 Gemini 进行翻译。
 
-<table>
-  <thead>
-    <tr>
-      <th width="50%">🇨🇳 核心特性</th>
-      <th width="50%">🇺🇸 Core Features</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>
-        <b>🚀 端到端自动化</b><br>
-        一键即可运行完整工作流：原视频导入、音频分离、字幕提取，到配音规划、人声合成和最终渲染。
-      </td>
-      <td>
-        <b>🚀 End-to-End Automation</b><br>
-        Run the entire workflow seamlessly: video import, audio separation, subtitle extraction, dubbing planning, voice synthesis, and final rendering.
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <b>🎙️ 角色音色固定</b><br>
-        集成 VoxCPM2 与 IndexTTS2 等 AI 语音合成引擎，自动识别视频中的不同角色并匹配固定音色，确保配音一致性。
-      </td>
-      <td>
-        <b>🎙️ Consistent Voice Matching</b><br>
-        Integrates advanced AI speech synthesis engines like VoxCPM2 and IndexTTS2, automatically identifying speakers and locking character voices.
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <b>🧩 智能句群规划</b><br>
-        基于 Google Gemini API 进行智能翻译，能够针对英语表达习惯进行“显示字幕”和“配音断句建议”的解耦规划。
-      </td>
-      <td>
-        <b>🧩 Smart Dubbing Planning</b><br>
-        Leverages Google Gemini API to translate subtitles and decouple "display subtitles" from "dubbing audio segment planning" for natural output.
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <b>🎛️ 可视化字幕编辑器</b><br>
-        内置 React 驱动的交互式 Web 界面，支持用户实时校对字幕、调整时间轴，并能灵活拖拽调整字幕在画面中的位置。
-      </td>
-      <td>
-        <b>🎛️ Visual Subtitle Editor</b><br>
-        Built-in React-powered editor allowing real-time calibration of subtitles, timelines, and drag-and-drop subtitle positioning on the video.
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <b>🛡️ 全本地隐私安全</b><br>
-        多媒体分析和 AI 推理均运行在本地 Python 虚拟环境中，保护企业及个人视频素材的隐私安全性。
-      </td>
-      <td>
-        <b>🛡️ Privacy & Local Processing</b><br>
-        Heavy multimedia analysis and AI inferences run entirely within local Python virtual environments, protecting your video source materials.
-      </td>
-    </tr>
-    <tr>
-      <td>
-        <b>📦 便携性与自动打包</b><br>
-        支持通过 Electron 跨平台封装，并提供自动化发布脚本，可一键将应用打包为独立便携版本（Portable），解压即用。
-      </td>
-      <td>
-        <b>📦 Desktop & Portability</b><br>
-        Wrapped inside Electron, featuring a fully automated build script that outputs ready-to-run portable versions for distribution.
-      </td>
-    </tr>
-  </tbody>
-</table>
+项目不会把 Hugging Face Token 写入源码。Token 应单独保存在本机文本文件中，仅在 `data/settings.json` 中配置文件路径。
 
----
+## 环境要求
 
-## 🎬 自动化工作流步骤 / Automated Workflow Steps
+| 项目 | 建议 |
+| --- | --- |
+| 操作系统 | Windows 10/11 x64 |
+| Node.js | 20 或更高版本；当前验证环境为 24.14.0 |
+| Python | 3.10；当前验证环境为 3.10.11 |
+| FFmpeg | 可从命令行调用，或由项目运行环境提供 |
+| GPU | 建议使用支持 CUDA 的 NVIDIA GPU |
+| 磁盘 | 建议准备容量充足的 D 盘存放模型、缓存、运行环境和视频产物 |
+| 网络 | 安装依赖、下载模型和使用 Gemini 时需要 |
 
-<details>
-<summary>🇨🇳 <b>查看工作流详情 (中文)</b></summary>
-<br>
+不同 AI 项目对 CUDA、PyTorch 和 Python 版本的要求可能不同。不要把所有模型强行安装到同一个 Python 环境中。
 
-1. **音频分离 (BS-RoFormer)**
-   * 提取原视频的音频轨，使用 AI 模型精细分离出对白音轨 (DX) 和背景声效底轨 (MX+FX)。
-   * *技术栈*: `BS-RoFormer` | `FFmpeg` | `PyTorch`
-2. **字幕提取 (PaddleOCR)**
-   * 通过图像文字识别（OCR）从视频底部的画面中精准获取已烧录的中文字幕，并生成带时间戳的 SRT 文件。
-   * *技术栈*: `PaddleOCR` | `OpenCV`
-3. **说话人识别 (WhisperX)**
-   * 利用 Whisper 语音识别与说话人日志技术，给不同语音片段打上角色标签（如 Speaker_0）。
-   * *技术栈*: `WhisperX` | `PyTorch` | `ASR`
-4. **英文翻译与规划 (Gemini API)**
-   * 调用 Gemini 智能生成高质量英文翻译，并输出专为配音节奏适配的语句分段规划 JSON 数据。
-   * *技术栈*: `Google Gemini` | `LLM API`
-5. **英文配音合成 (VoxCPM2 / IndexTTS2)**
-   * 根据规划好的说话人标签与时长，通过本地多角色 TTS 系统合成对应的英文配音音频段。
-   * *技术栈*: `VoxCPM2` | `IndexTTS2` | `CUDA`
-6. **混音渲染 (FFmpeg)**
-   * 合并分离的背景底噪轨 (MX+FX) 与新合成的英文配音轨，并将英文字幕烧录到视频画面上，生成成品视频。
-   * *技术栈*: `FFmpeg` | `librosa`
+## 快速开始
 
-</details>
+### 1. 获取源码并安装 Node.js 依赖
 
-<details>
-<summary>🇺🇸 <b>View Workflow Steps (English)</b></summary>
-<br>
+```powershell
+git clone https://github.com/GitYohoo/Video_Translation_Workflow.git
+Set-Location Video_Translation_Workflow
+npm install
+```
 
-1. **Vocal/BGM Separation (BS-RoFormer)**
-   * Extracts the original audio track, separating vocal dialog (DX) from background music and sound effects (MX+FX) using neural models.
-   * *Tech*: `BS-RoFormer` | `FFmpeg` | `PyTorch`
-2. **Subtitle OCR Extraction (PaddleOCR)**
-   * Extracts hardcoded Chinese subtitles directly from video frames utilizing optical character recognition to generate timestamped SRT files.
-   * *Tech*: `PaddleOCR` | `OpenCV`
-3. **Diarization & ASR (WhisperX)**
-   * Uses Whisper speech-to-text combined with voice diarization to assign speaker tags (e.g., Speaker_0) to dialogue lines.
-   * *Tech*: `WhisperX` | `PyTorch` | `ASR`
-4. **Translation & Dubbing Planning (Gemini)**
-   * Invokes Google Gemini to generate high-quality translation and structural planning data tailored for dubbing cadences.
-   * *Tech*: `Google Gemini` | `LLM API`
-5. **AI Voice Synthesis (VoxCPM2 / IndexTTS2)**
-   * Synthesizes distinct character voiceovers matching the identified speakers and temporal constraints using local AI TTS engines.
-   * *Tech*: `VoxCPM2` | `IndexTTS2` | `CUDA`
-6. **Video Rendering (FFmpeg)**
-   * Mixes synthesized English dubbing tracks with original BGM tracks, burns in the translated subtitles, and outputs the final video.
-   * *Tech*: `FFmpeg` | `librosa`
+依赖会安装到当前项目的 `node_modules`。仓库本身、模型和运行环境建议放在 D 盘，以减少 C 盘占用。
 
-</details>
+### 2. 创建本地运行配置
 
----
+```powershell
+Copy-Item data\settings.example.json data\settings.json
+```
 
-## 📂 目录结构 / Directory Structure
+`data/settings.json` 已被 Git 忽略。默认示例：
+
+```json
+{
+  "voxCpmPython": "D:\\models\\indextts2-venv\\Scripts\\python.exe",
+  "voxCpmTempDirectory": "D:\\Temp\\VoxCPMRuntime",
+  "whisperxTokenPath": "D:\\models\\huggingface\\token"
+}
+```
+
+| 字段 | 用途 |
+| --- | --- |
+| `voxCpmPython` | VoxCPM 工作流使用的 Python 可执行文件 |
+| `voxCpmTempDirectory` | 配音生成期间的临时目录 |
+| `whisperxTokenPath` | 保存 Hugging Face Token 的本机文本文件路径 |
+
+Token 文件只需要包含访问令牌本身。不要把 Token、`data/settings.json` 或 Token 文件复制到仓库。
+
+### 3. 准备 VoxCPM 环境
+
+项目提供了面向 D 盘的安装脚本：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_voxcpm_runtime.ps1
+```
+
+脚本默认使用以下目录：
+
+- Python 环境：`D:\models\indextts2-venv`
+- Hugging Face 缓存：`D:\models\huggingface`
+- PyTorch 缓存：`D:\models\torch`
+- Pip 缓存：`D:\models\pip-cache`
+- 临时目录：`D:\Temp\VoxCPMRuntime`
+
+如果已有兼容环境，可跳过脚本并直接修改 `data/settings.json`。
+
+### 4. 启动开发版
+
+启动 Vite 前端和 Express 后端：
+
+```powershell
+npm run dev
+```
+
+浏览器访问 `http://127.0.0.1:5173/`。
+
+### 5. 启动 Electron 桌面版
+
+```powershell
+npm run desktop
+```
+
+源码开发模式默认使用仓库内的 `data/` 和 `.runtime/`。打包后的桌面版默认把应用数据放在 `D:\VideoTranslationWorkflow\data`，大型运行环境放在 `D:\VideoTranslationWorkflow\runtime`。
+
+## 使用流程
+
+1. 在欢迎页选择原视频文件。
+2. 明确点击开始，应用并行启动音轨分离与 OCR。
+3. 对白轨就绪后运行 WhisperX，说话人字幕与 OCR 结果齐全后合并最终中文字幕。
+4. 在中文字幕页面校对文本和角色。
+5. 复制 Gemini 提示词，在外部完成翻译后，把 JSON 保存到界面指定位置并导入。
+6. 检查英文字幕，启动 VoxCPM 配音；需要时输入分段编号进行单条重配音。
+7. 调整英文字幕样式，生成并直接预览最终英文成片。
+
+项目产物默认写在源视频所在目录附近，包括：
+
+- `BS-RoFormer_二轨分离`
+- `OCR_字幕校准`
+- `最终中文字幕`
+- `<视频名>_英文翻译字幕`
+- 最终英文配音 MP4、ASS 字幕和结果报告
+
+处理正式素材前，建议先用短视频验证环境和磁盘空间。
+
+## 开发、测试与构建
+
+```powershell
+# Node.js 测试
+npm run test:node
+
+# Python 测试
+python -m unittest discover -s tests -p "test_*.py" -v
+
+# 前端生产构建
+npm run build
+
+# Electron 目录包
+npm run desktop:pack
+
+# Windows 安装版和便携版
+npm run desktop:dist
+
+# 完整发布流程：测试、构建、打包和产物验证
+npm run release
+```
+
+`npm run release` 会清理仓库内已有的 `release/`，然后重新生成安装版和便携版。请勿把需要保留的文件手工放入该目录。
+
+## 目录结构
 
 ```text
 Video_Translation_Workflow/
-├── .runtime/                   # 本地 Python 虚拟环境与 AI 权重模型 / Local Python Venvs & Model Weights
-│   ├── bs-roformer-models/      # 音声分离模型 / BS-RoFormer models
-│   ├── ffmpeg/                  # 静态 FFmpeg 工具包 / FFmpeg binary executables
-│   └── whisperx-models/         # 语音听写与说话人模型 / WhisperX model weights
-├── data/                        # 运行时生成数据与配置文件 / Live databases & log structures
-│   ├── logs/                    # 系统执行日志 / App backend logger directories
-│   └── videos.json              # 视频项目管理元数据 / Video project registry manifest
-├── docs/                        # 详细设计、规范与概览文档 / Specs, developer documentation & HTML plans
-├── electron/                    # Electron 桌面外壳及初始化导航逻辑 / Electron main shell & routing scripts
-├── scripts/                     # Python 工作流核心脚本与打包脚本 / Core Python processors & deployment scripts
-│   ├── burned_subtitle_ocr.py   # 视频烧录字幕提取 / Video frame hardcode subtitle OCR
-│   ├── voxcpm_dubbing_workflow.py# VoxCPM 配音管线 / VoxCPM TTS generation module
-│   └── package_release.ps1      # 一键自动化发布打包脚本 / Automated release script
-├── server/                      # Express.js REST API 服务端 / Express backend codebase
-├── src/                         # React 前端交互界面 / React UI client codebase
-├── package.json                 # 依赖管理与构建运行脚本配置 / Project dependencies & build instructions
-└── README.md                    # 双语项目文档 / Bilingual documentation portal
+├── build/              # 应用图标和 Electron 构建资源
+├── data/               # 配置示例；本机设置、日志和任务数据不会提交
+├── docs/               # 项目说明、设计和实施记录
+├── electron/           # Electron 主进程、预加载脚本和桌面设置
+├── scripts/            # Python 工作流及 PowerShell 打包/迁移脚本
+├── server/             # Express API、任务系统和工作流适配器
+├── src/                # React 前端
+├── tests/              # Node.js 与 Python 自动化测试
+├── package.json        # Node.js 依赖、脚本和桌面打包配置
+└── README.md           # GitHub 项目首页
 ```
 
----
+以下内容只应存在于本机，不应提交：
 
-## 🚀 快速开始 / Getting Started
+- `.env*`、私钥、证书、Token 和凭据文件
+- `.claude/`、`.idea/`、`.vscode/` 等本机工具配置
+- `data/settings.json`、`data/videos.json`、日志和任务状态
+- `.runtime/`、模型权重、缓存、`node_modules/`
+- 用户视频、音频、字幕以及生成成片
+- `dist/` 和 `release/`
 
-<details open>
-<summary>🇨🇳 <b>快速开始 (中文)</b></summary>
-<br>
+如果真实凭据曾经进入 Git 历史，仅删除当前文件不够：应立即吊销或轮换凭据，并在确认影响范围后清理历史。
 
-### 1. 安装 Node 依赖
-```bash
-npm install
-```
+## 常见问题
 
-### 2. 启动开发服务器
-验证开发端口占用情况，同时启动 Vite 前端热更新与 Express 后端 API 服务：
-```bash
-npm run dev
-```
+<details>
+<summary><strong>应用提示找不到 Hugging Face Token</strong></summary>
 
-### 3. 启动 Electron 桌面版 (开发调试)
-```bash
-npm run desktop
-```
-
-### 4. 打包发布应用
-进行自动代码编译、Electron 便携版打包、路径补丁与资源校验：
-```bash
-npm run release
-```
+确认 `whisperxTokenPath` 指向真实存在的文本文件，并且该 Token 已获得所需模型的访问权限。
 
 </details>
 
 <details>
-<summary>🇺🇸 <b>Getting Started (English)</b></summary>
-<br>
+<summary><strong>VoxCPM 或 WhisperX 无法启动</strong></summary>
 
-### 1. Install Node Dependencies
-```bash
-npm install
-```
-
-### 2. Start Development Servers
-Checks port availability and concurrently spins up the Vite frontend and Express server:
-```bash
-npm run dev
-```
-
-### 3. Start Electron App (Development)
-```bash
-npm run desktop
-```
-
-### 4. Production Packaging
-Build Vite assets, pack the Electron bundle, apply path patches, and verify the output package:
-```bash
-npm run release
-```
+检查配置的 Python 路径、CUDA/PyTorch 兼容性和模型缓存。先在对应虚拟环境中执行 `python --version` 与简单的 `import torch`，再从应用启动任务。
 
 </details>
 
----
+<details>
+<summary><strong>端口 3001 或 5173 被占用</strong></summary>
 
-## 🔌 常用后端 API / Common Backend APIs
+`npm run dev` 会先运行端口清理脚本。若仍失败，请关闭遗留的 Node.js/Vite 进程后重试。
 
-| 请求方式 / Method | 接口路径 / Path | 说明 / Description |
-| :--- | :--- | :--- |
-| `GET` | `/api/videos` | 获取当前工作视频项目列表 / Retrieve lists of registered video translation projects |
-| `POST` | `/api/videos` | 导入或上传新视频项目 / Import or upload new video resource and create state |
-| `POST` | `/api/videos/:id/workflow/ocr-subtitles` | 调度 Python 子进程启动视频硬字幕 OCR 识别 / Spawn Python sub-process to extract subtitles via PaddleOCR |
-| `POST` | `/api/videos/:id/workflow/english-dubbing` | 触发英文翻译与 AI 多角色音色配音合成 / Trigger Gemini translation & local AI dubbing pipeline |
-| `POST` | `/api/videos/:id/workflow/final-video` | 利用 FFmpeg 烧录字幕及合成音频渲染出最终成品 / Run FFmpeg compilation to render final dubbed/subtitled video |
-| `GET` | `/api/videos/:id/workflow/status` | 轮询任务的实时执行状态与日志反馈 / Fetch real-time process monitoring logs and worker state |
+</details>
 
----
+<details>
+<summary><strong>没有 D 盘怎么办</strong></summary>
 
-> 影译工坊 - 智能视频翻译工作台 | Powered by Ying Yi Gong Fang
+源码开发模式可使用仓库内的 `data/` 和 `.runtime/`。当前打包版默认按 D 盘目录设计；没有 D 盘时，需要在打包前调整桌面默认存储目录，或在后续版本中增加可选安装位置。
+
+</details>
+
+## 已知限制
+
+- 当前自动化流程主要针对中文烧录字幕和英文配音场景。
+- Gemini 翻译仍是人工复制提示词并导入 JSON，不是全自动 API 调用。
+- AI 模型环境较大，首次安装和下载耗时取决于网络与磁盘性能。
+- 桌面打包和运行路径目前优先针对 Windows 与 D 盘设计。
+- 仓库当前未附带开源许可证；公开可见不代表自动获得复制、修改或再分发授权。
+- 依赖更新后应重新运行 `npm audit`、完整测试、生产构建和桌面打包验证。
+
+## 贡献前检查
+
+提交变更前至少运行：
+
+```powershell
+npm run test:node
+python -m unittest discover -s tests -p "test_*.py" -v
+npm run build
+git diff --check
+```
+
+同时检查 `git status --ignored --short`，确认没有把本机配置、凭据、视频素材、模型或发布产物加入 Git。

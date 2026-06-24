@@ -168,6 +168,7 @@ export function createProjectPathResolver({ uploadDirectory }) {
         subtitle: dubbingPaths.inputs.englishSrt,
       },
       outputDirectory,
+      styleConfigPath: path.join(outputDirectory, `${prefix}_字幕样式配置.json`),
       styledAssPath: path.join(outputDirectory, `${prefix}_英文上方字幕.ass`),
       videoPath: path.join(outputDirectory, `${prefix}_内嵌英文字幕.mp4`),
       reportPath: path.join(outputDirectory, "英文配音视频成片结果.html"),
@@ -175,6 +176,29 @@ export function createProjectPathResolver({ uploadDirectory }) {
         path.join(outputDirectory, "字幕样式参考帧", "字幕编辑参考帧.jpg"),
       ],
       prefix,
+    };
+  }
+
+  function finalValidationOutputPaths(record) {
+    const finalVideoPaths = finalVideoOutputPaths(record);
+    const dubbingPaths = englishDubbingOutputPaths(record);
+    const separationPaths = bsRoformerOutputPaths(record);
+    if (!finalVideoPaths || !dubbingPaths || !separationPaths) {
+      return null;
+    }
+    const videoStem = path.parse(record.sourcePath).name;
+    const outputDirectory = outputRootDirectory(record);
+    return {
+      inputs: {
+        finalVideo: finalVideoPaths.videoPath,
+        sourceVideo: record.sourcePath,
+        dialogue: dubbingPaths.dialogueTrackPath,
+        background: separationPaths.backgroundPath,
+      },
+      outputDirectory,
+      configPath: path.join(outputDirectory, `${videoStem}_最终验证配置.json`),
+      videoPath: path.join(outputDirectory, `${videoStem}_英文配音_最终验证.mp4`),
+      reportPath: path.join(outputDirectory, `${videoStem}_最终验证结果.html`),
     };
   }
 
@@ -188,6 +212,7 @@ export function createProjectPathResolver({ uploadDirectory }) {
     const finalSubtitles = finalSubtitlesOutputPaths(record);
     const dubbing = englishDubbingOutputPaths(record);
     const finalVideo = finalVideoOutputPaths(record);
+    const finalValidation = finalValidationOutputPaths(record);
     const artifacts = {};
     const add = (artifact) => {
       if (artifact?.path) {
@@ -231,12 +256,16 @@ export function createProjectPathResolver({ uploadDirectory }) {
     add(fileArtifact("englishDubbing.assemblyReport", "英文整轨合成结果", dubbing?.assemblyReportPath));
     add(fileArtifact("englishDubbing.progressLog", "VoxCPM 运行日志", dubbing?.progressLogPath));
     add(directoryArtifact("finalVideo.outputDirectory", "最终成片输出目录", finalVideo?.outputDirectory));
+    add(fileArtifact("finalVideo.styleConfig", "字幕样式配置", finalVideo?.styleConfigPath));
     add(fileArtifact("finalVideo.styledAss", "成片字幕 ASS", finalVideo?.styledAssPath));
     add(fileArtifact("finalVideo.video", "最终英文成片 MP4", finalVideo?.videoPath));
     add(fileArtifact("finalVideo.report", "成片结果报告", finalVideo?.reportPath));
     finalVideo?.previewPaths?.forEach((previewPath, index) => {
       add(fileArtifact(`finalVideo.preview.${index + 1}`, `字幕样式参考帧 ${index + 1}`, previewPath));
     });
+    add(fileArtifact("finalValidation.config", "最终验证配置", finalValidation?.configPath));
+    add(fileArtifact("finalValidation.video", "最终验证成片", finalValidation?.videoPath));
+    add(fileArtifact("finalValidation.report", "最终验证结果", finalValidation?.reportPath));
     return artifacts;
   }
 
@@ -268,6 +297,7 @@ export function createProjectPathResolver({ uploadDirectory }) {
     finalSubtitlesOutputPaths,
     englishDubbingOutputPaths,
     finalVideoOutputPaths,
+    finalValidationOutputPaths,
     projectArtifacts,
     artifactForKey,
     artifactPathForKey,

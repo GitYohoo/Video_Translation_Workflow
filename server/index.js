@@ -11,13 +11,28 @@ import {
   readChineseSubtitleFile,
   saveChineseSubtitleFile,
 } from "./chinese-subtitle-editor.js";
-import { selectVideoPath } from "./file-dialog.js";
+import {
+  cleanupDubbingSegmentOutputs,
+  findDubbingSegmentAudioPath,
+  readDubbingSegments,
+  streamAudioFile,
+  updateDubbingSegmentManifest,
+} from "./dubbing-segment-editor.js";
+import { selectAudioPath, selectVideoPath } from "./file-dialog.js";
+import {
+  loadFinalVideoStyle,
+  saveFinalVideoStyle,
+} from "./final-video-style-store.js";
 import { createJobController } from "./job-controller.js";
 import { createJobStore, jobIdFor } from "./job-store.js";
 import { terminateChildProcess } from "./process-control.js";
 import {
   createProjectPathResolver,
 } from "./project-paths.js";
+import {
+  affectedWorkflowsForStage,
+  cleanupStageArtifacts,
+} from "./stage-artifact-cleanup.js";
 import { createJobRouter } from "./routes/job-routes.js";
 import { loadRuntimeSettings } from "./runtime-settings.js";
 import { listenForRequests } from "./server-listener.js";
@@ -27,6 +42,7 @@ import { createTaskRunner } from "./task-runner.js";
 import { activeTaskFromJob, recoverWorkflowTask } from "./workflow-job-state.js";
 import { createBsRoformerWorkflow } from "./workflows/bs-roformer.js";
 import { createFinalSubtitlesWorkflow } from "./workflows/final-subtitles.js";
+import { createFinalValidationWorkflow } from "./workflows/final-validation.js";
 import { createFinalVideoWorkflow } from "./workflows/final-video.js";
 import { createWhisperxWorkflow } from "./workflows/whisperx.js";
 
@@ -95,6 +111,7 @@ const renderEnglishVideoScript = path.join(
   scriptsDirectory,
   "render_english_dub_video.py",
 );
+const finalValidationScript = path.join(scriptsDirectory, "final_validation.py");
 const voxCpmPython = runtimeSettings.voxCpmPython;
 const voxCpmModelId = "openbmb/VoxCPM2";
 const voxCpmTempDirectory = runtimeSettings.voxCpmTempDirectory;
@@ -123,6 +140,7 @@ const {
   finalSubtitlesOutputPaths,
   englishDubbingOutputPaths,
   finalVideoOutputPaths,
+  finalValidationOutputPaths,
   artifactPathForKey,
   knownProjectPaths,
 } = projectPathResolver;
@@ -162,11 +180,13 @@ const activeWhisperxTasks = new Map();
 const activeFinalSubtitlesTasks = new Map();
 const activeEnglishDubbingTasks = new Map();
 const activeFinalVideoTasks = new Map();
+const activeFinalValidationTasks = new Map();
 const OCR_SUBTITLES_WORKFLOW = "ocr-subtitles";
 const WHISPERX_SPEAKERS_WORKFLOW = "whisperx-speakers";
 const FINAL_SUBTITLES_WORKFLOW = "final-subtitles";
 const ENGLISH_DUBBING_WORKFLOW = "english-dubbing-mix";
 const FINAL_VIDEO_WORKFLOW = "final-video";
+const FINAL_VALIDATION_WORKFLOW = "final-validation";
 const finalVideoStyles = new Map();
 const catalogStore = createCatalogStore(catalogPath);
 const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
@@ -264,12 +284,36 @@ const finalVideoWorkflow = createFinalVideoWorkflow({
   isFile,
   ensureDirectory: (directory) => fs.mkdir(directory, { recursive: true }),
   normalizeStyle: finalVideoStyle,
-  saveStyle: (videoId, style) => finalVideoStyles.set(videoId, style),
+  saveStyle: async (record, style) => {
+    const paths = finalVideoOutputPaths(record);
+    finalVideoStyles.set(record.id, style);
+    await saveFinalVideoStyle(paths?.styleConfigPath, style);
+  },
   buildArguments: (paths, style) => finalVideoArguments(paths, style),
   taskRunner,
   configuration: {
     pythonPath: punctuationPython,
     coreScript: renderEnglishVideoScript,
+    ffmpegPath: path.join(ffmpegDirectory, "ffmpeg.exe"),
+    logDirectory,
+    workingDirectory: workflowRootDirectory,
+    environment: finalVideoEnvironment(),
+  },
+});
+const finalValidationWorkflow = createFinalValidationWorkflow({
+  activeTasks: activeFinalValidationTasks,
+  outputPaths: finalValidationOutputPaths,
+  getFinalVideoStatus: finalVideoStatus,
+  getStatus: finalValidationStatus,
+  isFile,
+  ensureDirectory: (directory) => fs.mkdir(directory, { recursive: true }),
+  saveConfiguration: (filePath, value) =>
+    fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8"),
+  buildArguments: finalValidationArguments,
+  taskRunner,
+  configuration: {
+    pythonPath: punctuationPython,
+    coreScript: finalValidationScript,
     ffmpegPath: path.join(ffmpegDirectory, "ffmpeg.exe"),
     logDirectory,
     workingDirectory: workflowRootDirectory,
@@ -1372,8 +1416,18 @@ async function englishDubbingStatus(record) {
   const dialogueTrackReady = await isFile(paths.dialogueTrackPath);
   const mixedTrackReady = await isFile(paths.mixedTrackPath);
   const assemblyReportReady = await isFile(paths.assemblyReportPath);
-  const [canonicalTime, draftTime, controlledTime, preflightTime, dialogueTime, backgroundTime, sourceTime, mixedTime] =
-    await Promise.all([
+  const [
+    canonicalTime,
+    draftTime,
+    controlledTime,
+    preflightTime,
+    dialogueTime,
+    backgroundTime,
+    sourceTime,
+    segmentManifestTime,
+    dubbingManifestTime,
+    mixedTime,
+  ] = await Promise.all([
       modificationTime(paths.inputs.chineseTimelineSrt),
       modificationTime(paths.inputs.englishDraftSrt),
       modificationTime(paths.inputs.englishSrt),
@@ -1381,6 +1435,8 @@ async function englishDubbingStatus(record) {
       modificationTime(paths.inputs.dialogue),
       modificationTime(paths.inputs.background),
       modificationTime(record.sourcePath),
+      modificationTime(paths.segmentManifestPath),
+      modificationTime(paths.dubbingManifestPath),
       modificationTime(paths.mixedTrackPath),
     ]);
   const preflightOutdated =
@@ -1392,16 +1448,16 @@ async function englishDubbingStatus(record) {
   const mixOutdated =
     preflightOutdated ||
     mixedTime === null ||
-    [controlledTime, dialogueTime, backgroundTime, sourceTime].some(
+    [
+      controlledTime,
+      dialogueTime,
+      backgroundTime,
+      sourceTime,
+      segmentManifestTime,
+      dubbingManifestTime,
+    ].some(
       (inputTime) => inputTime !== null && inputTime > mixedTime,
     );
-  const canRedub =
-    canRun &&
-    segmentManifestReady &&
-    dubbingManifestReady &&
-    dialogueTrackReady &&
-    mixedTrackReady &&
-    !mixOutdated;
   let status = canRun ? "ready" : "blocked";
   if (task?.status === "running") {
     status = "running";
@@ -1413,17 +1469,21 @@ async function englishDubbingStatus(record) {
     status = "completed";
   }
   const dubbingProgress = await readVoxCpmProgress(paths.progressLogPath);
+  const segments = segmentManifestReady
+    ? await readDubbingSegments(paths, record.id, { isFile })
+    : [];
   return {
     status,
     canRun,
-    canRedub,
     editorComplete: Boolean(editor.complete),
     skippedEnglishNumbers: editor.cues.filter((cue) => cue.skipped).map((cue) => cue.number),
     missingEnglishNumbers: editor.missingEnglishNumbers || [],
     preflightOutdated,
     mixOutdated,
     stage: task?.stage || null,
+    activeSegmentNumber: task?.segmentNumber || null,
     dubbingProgress,
+    segments,
     inputs,
     workDirectory: paths.workDirectory,
     workDirectoryReady: await isDirectory(paths.workDirectory),
@@ -1443,7 +1503,6 @@ async function englishDubbingStatus(record) {
     startedAt: task?.startedAt || null,
     finishedAt: task?.finishedAt || null,
     logPath: task?.logPath || null,
-    redubSegmentNumber: task?.redubSegmentNumber || null,
     error: task?.error || null,
   };
 }
@@ -1720,29 +1779,26 @@ async function startEnglishDubbing(record) {
   return englishDubbingStatus(record);
 }
 
-async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
+async function startDubbingSegmentRegeneration(record, segmentNumber, changes) {
   const paths = englishDubbingOutputPaths(record);
   if (!paths) {
-    throw new Error("该项目没有原视频路径，无法执行单条重新配音。");
+    throw new Error("该项目没有原视频路径，无法重新配音。");
   }
-  const segmentNumber = Number(segmentNumberValue);
-  if (!Number.isInteger(segmentNumber) || segmentNumber < 1) {
-    throw new Error("请输入大于等于 1 的配音分段编号。");
+  const number = Number(segmentNumber);
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error("配音条目编号无效。");
   }
   if (activeEnglishDubbingTasks.get(record.id)?.status === "running") {
-    return englishDubbingStatus(record);
-  }
-  const status = await englishDubbingStatus(record);
-  if (!status.canRedub) {
-    throw new Error("请先完成步骤 06 的英文配音与混音，再执行单条重新配音。");
+    throw new Error("英文配音正在运行，完成后再修改单条配音。");
   }
   for (const [label, filePath] of [
     ["英文配音分段清单", paths.segmentManifestPath],
-    ["VoxCPM 英文配音清单", paths.dubbingManifestPath],
+    ["VoxCPM 配音清单", paths.dubbingManifestPath],
+    ["MX+FX 背景底轨", paths.inputs.background],
     ["VoxCPM 配音脚本", voxCpmCoreScript],
     ["整轨混音脚本", assembleEnglishTrackScript],
-    ["VoxCPM Python 环境", voxCpmPython],
     ["字幕处理 Python 环境", punctuationPython],
+    ["VoxCPM Python 环境", voxCpmPython],
     ["FFmpeg 程序", path.join(ffmpegDirectory, "ffmpeg.exe")],
   ]) {
     if (!(await isFile(filePath))) {
@@ -1750,14 +1806,25 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
     }
   }
 
+  const existingSegments = await readDubbingSegments(paths, record.id, { isFile });
+  const existingSegment = existingSegments.find((segment) => segment.number === number);
+  if (!existingSegment) {
+    throw new Error(`找不到第 ${String(number).padStart(3, "0")} 条配音。`);
+  }
+  const updateResult = await updateDubbingSegmentManifest(paths, number, changes, {
+    isFile,
+    videoId: record.id,
+  });
+  await cleanupDubbingSegmentOutputs(paths, existingSegment);
+  await cleanupDubbingSegmentOutputs(paths, updateResult.segment);
+  await removeFileIfExists(paths.progressLogPath);
+
   await fs.mkdir(paths.dubbingDirectory, { recursive: true });
   await fs.mkdir(paths.assemblyDirectory, { recursive: true });
   await fs.mkdir(voxCpmTempDirectory, { recursive: true });
-  const paddedSegmentNumber = String(segmentNumber).padStart(3, "0");
-  const logPath = path.join(
-    logDirectory,
-    `${record.id}_VoxCPM_单条重新配音_${paddedSegmentNumber}.log`,
-  );
+  const paddedNumber = String(number).padStart(3, "0");
+  const logPath = path.join(logDirectory, `${record.id}_VoxCPM_配音条目_${paddedNumber}.log`);
+  await removeFileIfExists(logPath);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
   const job = await jobStore.startJob({
     videoId: record.id,
@@ -1765,14 +1832,20 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
     logPath,
     stage: "redubbing",
   });
-  const persistedJob = await jobStore.updateJob(job.id, { redubSegmentNumber: segmentNumber });
-  const task = {
-    ...activeTaskFromJob(persistedJob),
-    redubSegmentNumber: segmentNumber,
-  };
+  const task = activeTaskFromJob(job);
+  task.segmentNumber = number;
   activeEnglishDubbingTasks.set(record.id, task);
   let currentChild = null;
   registerCancelableTask({ task, childProcess: () => currentChild, output });
+
+  async function updateStage(stage) {
+    task.stage = stage;
+    try {
+      await jobStore.updateJob(task.id, { stage, segmentNumber: number });
+    } catch (error) {
+      output.write(`\n写入任务阶段失败：${error.message}\n`);
+    }
+  }
 
   const commonEnvironment = {
     ...process.env,
@@ -1828,7 +1901,7 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
 
   void (async () => {
     try {
-      output.write(`步骤 1/2：重新生成第 ${paddedSegmentNumber} 段 VoxCPM 英文配音。\n`);
+      output.write(`步骤 1/2：重新生成第 ${paddedNumber} 条英文配音。\n`);
       await runProcess(
         voxCpmPython,
         [
@@ -1850,19 +1923,14 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
           "--normalize",
           "--per-segment-reference",
           "--segment-number",
-          String(segmentNumber),
+          String(number),
           "--overwrite",
         ],
         ttsEnvironment,
       );
 
-      task.stage = "mixing";
-      try {
-        await jobStore.updateJob(task.id, { stage: "mixing" });
-      } catch (error) {
-        output.write(`\n写入任务阶段失败：${error.message}\n`);
-      }
-      output.write(`\n步骤 2/2：用第 ${paddedSegmentNumber} 段新配音重新合成英文混音。\n`);
+      await updateStage("mixing");
+      output.write("\n步骤 2/2：自动重新合成英文对白整轨与 MX+FX 混音。\n");
       await runProcess(
         punctuationPython,
         [
@@ -1885,7 +1953,7 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
       task.stage = "completed";
       task.finishedAt = new Date().toISOString();
       try {
-        await jobStore.finishJob(task.id, "completed", { stage: "completed" });
+        await jobStore.finishJob(task.id, "completed", { stage: "completed", segmentNumber: number });
       } catch (error) {
         output.write(`\n写入任务状态失败：${error.message}\n`);
       } finally {
@@ -1897,10 +1965,10 @@ async function startSingleEnglishDubbingRedub(record, segmentNumberValue) {
         return;
       }
       task.status = "failed";
-      task.error = `第 ${paddedSegmentNumber} 段重新配音失败：${error.message}`;
+      task.error = `第 ${paddedNumber} 条重新配音失败：${error.message}`;
       task.finishedAt = new Date().toISOString();
       try {
-        await jobStore.failJob(task.id, task.error, { stage: task.stage });
+        await jobStore.failJob(task.id, task.error, { stage: task.stage, segmentNumber: number });
       } catch (jobError) {
         output.write(`\n写入任务状态失败：${jobError.message}\n`);
       } finally {
@@ -2001,6 +2069,9 @@ async function finalVideoStatus(record) {
       url: `/api/videos/${record.id}/workflow/final-video/previews/${index + 1}`,
     })),
   );
+  const style =
+    finalVideoStyles.get(record.id) ||
+    await loadFinalVideoStyle(paths.styleConfigPath, finalVideoStyle, finalVideoStyle());
   let status = canRun ? "ready" : "blocked";
   if (task?.status === "running") {
     status = "running";
@@ -2017,7 +2088,7 @@ async function finalVideoStatus(record) {
     canPreview,
     videoOutdated,
     inputs,
-    style: finalVideoStyles.get(record.id) || finalVideoStyle(),
+    style,
     outputDirectory: paths.outputDirectory,
     outputDirectoryReady:
       styledAssReady || videoReady || reportReady || previews.some((preview) => preview.ready),
@@ -2058,6 +2129,7 @@ async function generateFinalVideoPreview(record, requestedStyle) {
   const style = finalVideoStyle(requestedStyle);
   finalVideoStyles.set(record.id, style);
   await fs.mkdir(paths.outputDirectory, { recursive: true });
+  await saveFinalVideoStyle(paths.styleConfigPath, style);
   const logPath = path.join(logDirectory, `${record.id}_最终成片_字幕参考帧.log`);
   const output = createWriteStream(logPath, { flags: "w", encoding: "utf8" });
   await new Promise((resolve, reject) => {
@@ -2086,6 +2158,123 @@ async function generateFinalVideoPreview(record, requestedStyle) {
 
 async function startFinalVideo(record, requestedStyle) {
   return finalVideoWorkflow.start(record, requestedStyle);
+}
+
+function finalValidationArguments(paths) {
+  return [
+    finalValidationScript,
+    "--base-video",
+    paths.inputs.finalVideo,
+    "--source-video",
+    paths.inputs.sourceVideo,
+    "--dialogue",
+    paths.inputs.dialogue,
+    "--background",
+    paths.inputs.background,
+    "--config",
+    paths.configPath,
+    "--output-video",
+    paths.videoPath,
+    "--report",
+    paths.reportPath,
+  ];
+}
+
+async function readFinalValidationConfiguration(configPath) {
+  try {
+    const value = JSON.parse(await fs.readFile(configPath, "utf8"));
+    return {
+      sourceAudioRanges: Array.isArray(value.sourceAudioRanges)
+        ? value.sourceAudioRanges
+        : [],
+      mutedBackgroundRanges: Array.isArray(value.mutedBackgroundRanges)
+        ? value.mutedBackgroundRanges
+        : [],
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return {
+        sourceAudioRanges: [],
+        mutedBackgroundRanges: [],
+      };
+    }
+    throw error;
+  }
+}
+
+async function finalValidationStatus(record) {
+  const paths = finalValidationOutputPaths(record);
+  if (!paths) {
+    return {
+      status: "unavailable",
+      canRun: false,
+      error: "该项目没有可执行的原视频路径。",
+    };
+  }
+  const activeTask = activeFinalValidationTasks.get(record.id);
+  const persistedJob = await jobStore.readJob(
+    jobIdFor(record.id, FINAL_VALIDATION_WORKFLOW),
+  );
+  const task = recoverWorkflowTask(activeTask, persistedJob);
+  const inputEntries = await Promise.all(
+    Object.entries(paths.inputs).map(async ([key, inputPath]) => [
+      key,
+      { path: inputPath, ready: await isFile(inputPath) },
+    ]),
+  );
+  const inputs = Object.fromEntries(inputEntries);
+  const finalVideo = await finalVideoStatus(record);
+  const canRun =
+    finalVideo.status === "completed" &&
+    Object.values(inputs).every((input) => input.ready);
+  const configReady = await isFile(paths.configPath);
+  const videoReady = await isFile(paths.videoPath);
+  const reportReady = await isFile(paths.reportPath);
+  const configuration = await readFinalValidationConfiguration(paths.configPath);
+  const [finalVideoTime, sourceTime, dialogueTime, backgroundTime, configTime, outputTime] =
+    await Promise.all([
+      modificationTime(paths.inputs.finalVideo),
+      modificationTime(paths.inputs.sourceVideo),
+      modificationTime(paths.inputs.dialogue),
+      modificationTime(paths.inputs.background),
+      modificationTime(paths.configPath),
+      modificationTime(paths.videoPath),
+    ]);
+  const outputOutdated =
+    outputTime === null ||
+    [finalVideoTime, sourceTime, dialogueTime, backgroundTime, configTime].some(
+      (inputTime) => inputTime !== null && inputTime > outputTime,
+    );
+  let status = canRun ? "ready" : "blocked";
+  if (task?.status === "running") {
+    status = "running";
+  } else if (task?.status === "failed") {
+    status = "failed";
+  } else if (task?.status === "cancelled") {
+    status = "cancelled";
+  } else if (videoReady && reportReady && canRun && !outputOutdated) {
+    status = "completed";
+  }
+  return {
+    status,
+    canRun,
+    outputOutdated,
+    inputs,
+    configuration,
+    outputs: {
+      config: { path: paths.configPath, ready: configReady },
+      video: { path: paths.videoPath, ready: videoReady },
+      report: { path: paths.reportPath, ready: reportReady },
+    },
+    startedAt: task?.startedAt || null,
+    finishedAt: task?.finishedAt || null,
+    logPath: task?.logPath || null,
+    error: task?.error || null,
+  };
+}
+
+async function startFinalValidation(record, requestedConfiguration) {
+  return finalValidationWorkflow.start(record, requestedConfiguration);
 }
 
 async function buildReferenceRecord(sourcePath) {
@@ -2413,6 +2602,52 @@ app.get("/api/videos/:id/workflow/chinese-subtitle-editor", async (request, resp
   }
 });
 
+app.delete("/api/videos/:id/workflow/stages/:stageId", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    const activeTasksByWorkflow = {
+      "bs-roformer": activeBsRoformerTasks,
+      [OCR_SUBTITLES_WORKFLOW]: activeOcrTasks,
+      [WHISPERX_SPEAKERS_WORKFLOW]: activeWhisperxTasks,
+      [FINAL_SUBTITLES_WORKFLOW]: activeFinalSubtitlesTasks,
+      [ENGLISH_DUBBING_WORKFLOW]: activeEnglishDubbingTasks,
+      [FINAL_VIDEO_WORKFLOW]: activeFinalVideoTasks,
+      [FINAL_VALIDATION_WORKFLOW]: activeFinalValidationTasks,
+    };
+    const affectedWorkflows = affectedWorkflowsForStage(request.params.stageId);
+    const hasRunningTask = affectedWorkflows.some(
+      (workflow) => activeTasksByWorkflow[workflow]?.get(video.id)?.status === "running",
+    );
+    if (hasRunningTask) {
+      response.status(409).json({ error: "该步骤或后续步骤仍在运行，请先等待完成或取消任务。" });
+      return;
+    }
+    const result = await cleanupStageArtifacts({
+      stageId: request.params.stageId,
+      videoId: video.id,
+      logDirectory,
+      jobDirectory,
+      paths: {
+        separation: bsRoformerOutputPaths(video),
+        ocr: ocrOutputPaths(video),
+      finalSubtitles: finalSubtitlesOutputPaths(video),
+      dubbing: englishDubbingOutputPaths(video),
+      finalVideo: finalVideoOutputPaths(video),
+      finalValidation: finalValidationOutputPaths(video),
+      },
+    });
+    finalVideoStyles.delete(video.id);
+    response.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.put("/api/videos/:id/workflow/chinese-subtitle-editor", async (request, response, next) => {
   try {
     const videos = await loadCatalog();
@@ -2506,7 +2741,54 @@ app.post("/api/videos/:id/workflow/english-dubbing-mix/run", async (request, res
   }
 });
 
-app.post("/api/videos/:id/workflow/english-dubbing-mix/redub", async (request, response, next) => {
+app.get("/api/videos/:id/workflow/english-dubbing-mix/segments/:segmentNumber/audio", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    const paths = englishDubbingOutputPaths(video);
+    const filePath = await findDubbingSegmentAudioPath(
+      paths,
+      request.params.segmentNumber,
+      request.query.kind || "fitted",
+      { isFile },
+    );
+    streamAudioFile(filePath, response);
+  } catch (error) {
+    if (/找不到|尚未生成|未知配音音频类型/.test(error.message)) {
+      response.status(404).json({ error: error.message });
+      return;
+    }
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/workflow/english-dubbing-mix/reference-audio/select", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    const selectedPath = await selectAudioPath();
+    if (!selectedPath) {
+      response.status(204).end();
+      return;
+    }
+    response.json({
+      path: selectedPath,
+      name: path.basename(selectedPath),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/videos/:id/workflow/english-dubbing-mix/segments/:segmentNumber/regenerate", async (request, response, next) => {
   try {
     const videos = await loadCatalog();
     const video = videos.find((item) => item.id === request.params.id);
@@ -2515,7 +2797,11 @@ app.post("/api/videos/:id/workflow/english-dubbing-mix/redub", async (request, r
       return;
     }
     response.status(202).json(
-      await startSingleEnglishDubbingRedub(video, request.body?.segmentNumber),
+      await startDubbingSegmentRegeneration(
+        video,
+        request.params.segmentNumber,
+        request.body,
+      ),
     );
   } catch (error) {
     next(error);
@@ -2531,6 +2817,28 @@ app.get("/api/videos/:id/workflow/final-video", async (request, response, next) 
       return;
     }
     response.json(await finalVideoStatus(video));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/videos/:id/workflow/final-video/style", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    const paths = finalVideoOutputPaths(video);
+    if (!paths) {
+      response.status(409).json({ error: "该项目没有原视频路径，无法保存字幕样式。" });
+      return;
+    }
+    const style = finalVideoStyle(request.body?.style || request.body || {});
+    finalVideoStyles.set(video.id, style);
+    await saveFinalVideoStyle(paths.styleConfigPath, style);
+    response.json({ style });
   } catch (error) {
     next(error);
   }
@@ -2582,6 +2890,120 @@ app.get("/api/videos/:id/workflow/final-video/previews/:frameNumber", async (req
     response.sendFile(previewPath, {
       headers: { "Cache-Control": "no-store" },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/workflow/final-validation", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    response.json(await finalValidationStatus(video));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/videos/:id/workflow/final-validation/run", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    response.status(202).json(await startFinalValidation(video, request.body));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/workflow/final-video/content", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    const filePath = finalVideoOutputPaths(video)?.videoPath;
+    if (!filePath || !(await isFile(filePath))) {
+      response.sendStatus(404);
+      return;
+    }
+    const stats = await fs.stat(filePath);
+    const range = request.headers.range;
+    response.setHeader("Content-Type", "video/mp4");
+    response.setHeader("Accept-Ranges", "bytes");
+    response.setHeader("Cache-Control", "no-store");
+
+    if (!range) {
+      response.setHeader("Content-Length", stats.size);
+      createReadStream(filePath).pipe(response);
+      return;
+    }
+
+    const [rawStart, rawEnd] = range.replace("bytes=", "").split("-");
+    const start = Number(rawStart);
+    const end = rawEnd ? Number(rawEnd) : stats.size - 1;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || end >= stats.size) {
+      response.status(416).setHeader("Content-Range", `bytes */${stats.size}`).end();
+      return;
+    }
+    response.status(206);
+    response.setHeader("Content-Range", `bytes ${start}-${end}/${stats.size}`);
+    response.setHeader("Content-Length", end - start + 1);
+    createReadStream(filePath, { start, end }).pipe(response);
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/videos/:id/workflow/final-validation/content", async (request, response, next) => {
+  try {
+    const videos = await loadCatalog();
+    const video = videos.find((item) => item.id === request.params.id);
+    if (!video) {
+      response.sendStatus(404);
+      return;
+    }
+    const paths = finalValidationOutputPaths(video);
+    const validationStatus = await finalValidationStatus(video);
+    const verifiedReady =
+      validationStatus.status === "completed" &&
+      paths?.videoPath &&
+      await isFile(paths.videoPath);
+    const filePath = verifiedReady ? paths.videoPath : paths?.inputs.finalVideo;
+    if (!filePath || !(await isFile(filePath))) {
+      response.sendStatus(404);
+      return;
+    }
+    const stats = await fs.stat(filePath);
+    const range = request.headers.range;
+    response.setHeader("Content-Type", "video/mp4");
+    response.setHeader("Accept-Ranges", "bytes");
+    response.setHeader("Cache-Control", "no-store");
+    if (!range) {
+      response.setHeader("Content-Length", stats.size);
+      createReadStream(filePath).pipe(response);
+      return;
+    }
+    const [rawStart, rawEnd] = range.replace("bytes=", "").split("-");
+    const start = Number(rawStart);
+    const end = rawEnd ? Number(rawEnd) : stats.size - 1;
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || end >= stats.size) {
+      response.status(416).setHeader("Content-Range", `bytes */${stats.size}`).end();
+      return;
+    }
+    response.status(206);
+    response.setHeader("Content-Range", `bytes ${start}-${end}/${stats.size}`);
+    response.setHeader("Content-Length", end - start + 1);
+    createReadStream(filePath, { start, end }).pipe(response);
   } catch (error) {
     next(error);
   }

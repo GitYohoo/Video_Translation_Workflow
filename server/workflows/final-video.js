@@ -47,7 +47,7 @@ export function createFinalVideoWorkflow({
     }
 
     const style = normalizeStyle(requestedStyle);
-    saveStyle(record.id, style);
+    await saveStyle(record, style);
     await ensureDirectory(paths.outputDirectory);
     const processArguments = buildArguments(paths, style);
     await taskRunner.start({

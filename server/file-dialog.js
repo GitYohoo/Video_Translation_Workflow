@@ -2,18 +2,20 @@ import { spawn } from "node:child_process";
 
 export const videoFileDialogFilter =
   "视频文件 (*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts)|*.mp4;*.mov;*.mkv;*.avi;*.wmv;*.flv;*.ts|所有文件 (*.*)|*.*";
+export const audioFileDialogFilter =
+  "WAV 音频 (*.wav)|*.wav|所有文件 (*.*)|*.*";
 
 function powershellString(value) {
   return `'${value.replaceAll("'", "''")}'`;
 }
 
-export function buildVideoFileDialogScript() {
+function buildFileDialogScript({ title, filter }) {
   return `
 Add-Type -AssemblyName System.Windows.Forms
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $dialog = New-Object System.Windows.Forms.OpenFileDialog
-$dialog.Title = ${powershellString("选择原视频文件")}
-$dialog.Filter = ${powershellString(videoFileDialogFilter)}
+$dialog.Title = ${powershellString(title)}
+$dialog.Filter = ${powershellString(filter)}
 $dialog.Multiselect = $false
 $dialog.CheckFileExists = $true
 $dialog.CheckPathExists = $true
@@ -23,12 +25,26 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
 `.trim();
 }
 
+export function buildVideoFileDialogScript() {
+  return buildFileDialogScript({
+    title: "选择原视频文件",
+    filter: videoFileDialogFilter,
+  });
+}
+
+export function buildAudioFileDialogScript() {
+  return buildFileDialogScript({
+    title: "选择参考音频",
+    filter: audioFileDialogFilter,
+  });
+}
+
 export function parseSelectedVideoPath(output) {
   const selectedPath = output.trim();
   return selectedPath || null;
 }
 
-export function selectVideoPath() {
+function selectPath(script) {
   return new Promise((resolve, reject) => {
     const child = spawn(
       "powershell.exe",
@@ -38,7 +54,7 @@ export function selectVideoPath() {
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        buildVideoFileDialogScript(),
+        script,
       ],
       {
         windowsHide: false,
@@ -63,4 +79,12 @@ export function selectVideoPath() {
       resolve(parseSelectedVideoPath(stdout));
     });
   });
+}
+
+export function selectVideoPath() {
+  return selectPath(buildVideoFileDialogScript());
+}
+
+export function selectAudioPath() {
+  return selectPath(buildAudioFileDialogScript());
 }

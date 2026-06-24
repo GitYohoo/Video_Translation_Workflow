@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import re
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ NON_SPEECH_PATTERN = re.compile(
     re.IGNORECASE,
 )
 HEX_COLOR_PATTERN = re.compile(r"^#[0-9A-Fa-f]{6}$")
+VIDEO_RESOLUTION_PATTERN = re.compile(r"\b(?P<width>[1-9]\d{1,4})x(?P<height>[1-9]\d{1,4})\b")
 
 
 @dataclass(frozen=True)
@@ -133,17 +135,21 @@ def write_ass(
     background_opacity: float,
     position_x: float,
     position_y: float,
+    play_res_width: int = 1920,
+    play_res_height: int = 1080,
 ) -> None:
     if not 0.0 <= position_x <= 100.0 or not 0.0 <= position_y <= 100.0:
         raise ValueError("字幕位置百分比必须在 0 至 100 之间。")
-    position_x_pixels = round(1920 * position_x / 100)
-    position_y_pixels = round(1080 * position_y / 100)
+    if play_res_width <= 0 or play_res_height <= 0:
+        raise ValueError("ASS 画布分辨率必须大于 0。")
+    position_x_pixels = round(play_res_width * position_x / 100)
+    position_y_pixels = round(play_res_height * position_y / 100)
     primary_colour = ass_color(text_color)
     back_colour = ass_color(background_color, background_opacity)
     header = f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 1920
-PlayResY: 1080
+PlayResX: {play_res_width}
+PlayResY: {play_res_height}
 WrapStyle: 0
 ScaledBorderAndShadow: yes
 YCbCr Matrix: TV.709
@@ -165,6 +171,49 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 rf"{{\an5\pos({position_x_pixels},{position_y_pixels})}}"
                 f"{ass_escape(cue.text)}\n"
             )
+
+
+def probe_video_resolution(video: Path, ffmpeg: str, ffprobe: str | None = None) -> tuple[int, int]:
+    if ffprobe:
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "json",
+                    str(video),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            streams = json.loads(result.stdout or "{}").get("streams") or []
+            if streams:
+                width = int(streams[0].get("width") or 0)
+                height = int(streams[0].get("height") or 0)
+                if width > 0 and height > 0:
+                    return width, height
+        except (subprocess.CalledProcessError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-i", str(video)],
+        capture_output=True,
+        text=True,
+    )
+    for line in result.stderr.splitlines():
+        if "Video:" not in line:
+            continue
+        match = VIDEO_RESOLUTION_PATTERN.search(line)
+        if match:
+            return int(match.group("width")), int(match.group("height"))
+    raise ValueError(f"无法读取视频分辨率，不能生成与预览一致的字幕样式：{video}")
 
 
 def run_ffmpeg(
@@ -309,6 +358,7 @@ def main() -> int:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
         raise FileNotFoundError("找不到 FFmpeg，无法生成最终英文配音视频。")
+    ffprobe = shutil.which("ffprobe")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     ass_path = output_dir / f"{args.output_prefix}_英文上方字幕.ass"
@@ -319,6 +369,7 @@ def main() -> int:
         raise FileExistsError(f"已有最终成片输出：{existing[0]}。需要替换时请传入 --overwrite。")
 
     cues = load_srt(subtitle)
+    play_res_width, play_res_height = probe_video_resolution(video, ffmpeg, ffprobe)
     write_ass(
         ass_path,
         cues,
@@ -329,6 +380,8 @@ def main() -> int:
         args.background_opacity,
         args.position_x,
         args.position_y,
+        play_res_width,
+        play_res_height,
     )
     print(f"成片用英文 ASS 已生成（位于中文字幕上方并保留行距）：{ass_path}", flush=True)
     preview_paths = write_reference_frames(ffmpeg, video, output_dir, cues)

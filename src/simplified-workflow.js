@@ -126,8 +126,12 @@ export function buildSimplifiedWorkflowOverview(input = {}) {
   const canTranslate = Boolean(input.finalSubtitles?.outputs?.srt?.ready || input.finalSubtitles?.status === "completed");
   const hasDubbingProgress = ["running", "completed"].includes(input.englishDubbing?.status);
   const hasFinalVideoProgress = ["running", "completed"].includes(input.finalVideo?.status);
+  const hasFinalValidationProgress = ["running", "completed"].includes(input.finalValidation?.status);
   const translationComplete = Boolean(
-    input.subtitleEditorComplete || hasDubbingProgress || hasFinalVideoProgress,
+    input.subtitleEditorComplete ||
+    hasDubbingProgress ||
+    hasFinalVideoProgress ||
+    hasFinalValidationProgress,
   );
   const chineseReviewComplete = Boolean(
     input.chineseReviewComplete || translationComplete,
@@ -178,6 +182,15 @@ export function buildSimplifiedWorkflowOverview(input = {}) {
       completedLabel: "英文成片已完成",
       blockedLabel: "等待英文混音与字幕",
     },
+    {
+      id: "finalValidation",
+      title: "最终验证",
+      panelId: "finalValidation",
+      readyLabel: "打开最终验证",
+      runningLabel: "正在生成验证成片",
+      completedLabel: "最终验证已完成",
+      blockedLabel: "等待最终成片",
+    },
   ];
   const steps = stepDefinitions.map((step, index) => {
     const state = step.id === "generateChinese"
@@ -187,10 +200,17 @@ export function buildSimplifiedWorkflowOverview(input = {}) {
       : step.id === "translation"
         ? translationComplete ? "completed" : canTranslate ? "ready" : "blocked"
         : step.id === "englishDubbing"
-          ? hasFinalVideoProgress
+          ? hasFinalVideoProgress || hasFinalValidationProgress
             ? "completed"
             : statusOrBlocked(input.englishDubbing, input.englishDubbing?.canRun)
-          : statusOrBlocked(input.finalVideo, input.finalVideo?.canRun);
+          : step.id === "finalVideo"
+            ? hasFinalValidationProgress
+              ? "completed"
+              : statusOrBlocked(input.finalVideo, input.finalVideo?.canRun)
+            : statusOrBlocked(
+                input.finalValidation,
+                input.finalVideo?.status === "completed",
+              );
     return {
     id: step.id,
     title: step.title,
@@ -217,8 +237,8 @@ export function buildSimplifiedWorkflowOverview(input = {}) {
       completedCount,
       totalCount,
       percent,
-      headline: "英文成片已生成",
-      detail: "主要流程已经完成，可以在导出成片页面打开最终 MP4。",
+      headline: "最终验证已完成",
+      detail: "最终验证成片已经生成。",
       nextAction: null,
     };
   }

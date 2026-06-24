@@ -31,7 +31,7 @@ function fixture(overrides = {}) {
       calls.push(["normalizeStyle", style]);
       return normalizedStyle;
     },
-    saveStyle: (videoId, style) => calls.push(["saveStyle", videoId, style]),
+    saveStyle: (record, style) => calls.push(["saveStyle", record.id, style]),
     buildArguments: (receivedPaths, style) => {
       calls.push(["buildArguments", receivedPaths, style]);
       return ["render.py", "--output-dir", receivedPaths.outputDirectory];

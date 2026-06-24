@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>公共仓库安全清理与文档完善实施计划</title>
+  <style>
+    body {
+      max-width: 1000px;
+      margin: 40px auto;
+      padding: 0 24px 64px;
+      color: #172033;
+      font: 16px/1.7 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    h1, h2, h3 { line-height: 1.3; }
+    code, pre {
+      border-radius: 5px;
+      background: #eef2f7;
+    }
+    code { padding: 0.15em 0.35em; }
+    pre {
+      overflow-x: auto;
+      padding: 14px 16px;
+      white-space: pre-wrap;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      padding: 9px 11px;
+      border: 1px solid #ccd5e1;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f5f7fa; }
+    .meta {
+      padding: 14px 18px;
+      border-left: 4px solid #2563eb;
+      background: #eff6ff;
+    }
+  </style>
+</head>
+<body>
+  <h1>公共仓库安全清理与文档完善实施计划</h1>
+
+  <div class="meta">
+    <p><strong>执行要求：</strong>逐项执行并更新任务状态；本轮不提交实际修改，不推送远端。</p>
+    <p><strong>目标：</strong>将仓库整理为适合以后公开同步的状态，完善 README，并把现有功能更新纳入 0.2.18。</p>
+    <p><strong>方法：</strong>保留本机文件和运行数据，只改变 Git 跟踪边界；README 明确依赖、配置、目录、安全和验证方式。</p>
+    <p><strong>技术栈：</strong>Git、Node.js、React、Electron、Express、Python、PowerShell。</p>
+  </div>
+
+  <h2>文件变更范围</h2>
+  <table>
+    <thead>
+      <tr><th>文件</th><th>动作</th><th>职责</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>.gitignore</code></td><td>修改</td><td>阻止本地配置、凭据、模型、缓存、日志、构建和运行数据被误提交。</td></tr>
+      <tr><td><code>.claude/settings.local.json</code></td><td>仅从 Git 索引移除</td><td>本机文件保留，但以后不进入公共仓库。</td></tr>
+      <tr><td><code>README.md</code></td><td>重写</td><td>作为 GitHub 首页，提供中文主文档、英文简介、安装配置和安全边界。</td></tr>
+      <tr><td><code>package.json</code></td><td>修改</td><td>版本更新为 0.2.18。</td></tr>
+      <tr><td><code>package-lock.json</code></td><td>修改</td><td>锁文件根版本与项目版本同步。</td></tr>
+      <tr><td>现有六个暂存文件</td><td>保留</td><td>保留界面精简、独立滚动、最终视频播放及测试，不回退用户修改。</td></tr>
+    </tbody>
+  </table>
+
+  <h2>任务 1：确认执行环境和基线</h2>
+  <ol>
+    <li>
+      <strong>确认当前不是链接 worktree，并在当前分支执行。</strong>
+      <pre>git rev-parse --git-dir
+git rev-parse --git-common-dir
+git branch --show-current
+git status -sb</pre>
+      <p>预期：Git 目录与公共目录均为 <code>.git</code>；分支为 <code>simplified-workflow</code>；六个功能文件保持暂存。</p>
+    </li>
+    <li>
+      <strong>确认依赖已经安装。</strong>
+      <pre>Test-Path node_modules
+node --version
+npm --version
+python --version
+ffmpeg -version</pre>
+      <p>预期：<code>node_modules</code> 存在，Node、npm、Python 和 FFmpeg 均可调用。</p>
+    </li>
+    <li>
+      <strong>运行修改前的完整基线测试。</strong>
+      <pre>npm run test:node
+python -m unittest discover -s tests -p "test_*.py" -v</pre>
+      <p>预期：Node 与 Python 测试均为零失败。若失败，先判断是否来自现有暂存功能改动。</p>
+    </li>
+  </ol>
+
+  <h2>任务 2：强化公共仓库边界</h2>
+  <ol>
+    <li>
+      <strong>扩充 <code>.gitignore</code>。</strong>
+      <p>保留现有规则，并增加以下类别：</p>
+      <pre># 本机工具配置
+.claude/
+.idea/
+.vscode/
+
+# 环境变量、凭据与本地证书
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*token*
+*secret*
+*credential*
+
+# 本地应用配置
+data/settings.json
+data/desktop-settings.json
+
+# Python 与测试缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 操作系统和编辑器临时文件
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp</pre>
+      <p>Token 规则只作用于文件名；公开示例文件 <code>data/settings.example.json</code> 不受影响。</p>
+    </li>
+    <li>
+      <strong>取消跟踪 Claude 本机配置，同时保留本机文件。</strong>
+      <pre>git rm --cached -- .claude/settings.local.json
+Test-Path .claude/settings.local.json
+git check-ignore -v .claude/settings.local.json</pre>
+      <p>预期：文件仍存在于磁盘，Git 状态显示删除，且忽略规则命中 <code>.claude/</code>。</p>
+    </li>
+    <li>
+      <strong>验证公开示例仍被跟踪。</strong>
+      <pre>git ls-files data/settings.example.json
+git check-ignore data/settings.example.json</pre>
+      <p>预期：示例文件仍在跟踪列表中，第二条命令不输出路径。</p>
+    </li>
+  </ol>
+
+  <h2>任务 3：重写 GitHub 首页 README</h2>
+  <ol>
+    <li>
+      <strong>将 README 更新为 0.2.18，并保留 GitHub 所需文件名。</strong>
+      <p>README 使用 Markdown 与 GitHub 兼容 HTML，结构固定为：</p>
+      <ul>
+        <li>项目标题、0.2.18 徽章和简洁中英文简介。</li>
+        <li>适用范围与“本地优先但 Gemini 翻译需要联网”的准确隐私说明。</li>
+        <li>当前工作流：音轨分离、OCR、WhisperX、翻译校对、VoxCPM、成片导出。</li>
+        <li>0.2.18 更新：精简翻译/配音/成片界面、双栏独立滚动、最终视频直接播放、安全清理。</li>
+        <li>Windows 10/11、Node.js、Python、FFmpeg、NVIDIA CUDA 的环境要求。</li>
+        <li>源码开发命令：<code>npm install</code>、<code>npm run dev</code>、<code>npm run desktop</code>。</li>
+        <li>复制 <code>data/settings.example.json</code> 到 <code>data/settings.json</code> 的配置步骤。</li>
+        <li>配置字段：VoxCPM Python、临时目录、Hugging Face Token 文件路径。</li>
+        <li>D 盘默认目录和可配置说明。</li>
+        <li>测试、构建和发布命令。</li>
+        <li>敏感信息与运行数据禁止提交清单。</li>
+        <li>项目目录结构、已知限制、排障和贡献检查清单。</li>
+      </ul>
+    </li>
+    <li>
+      <strong>核对 README 命令与项目脚本一致。</strong>
+      <pre>npm pkg get version scripts
+rg -n "0\.2\.18|npm run test:node|npm run build|npm run release|data/settings\.json" README.md</pre>
+      <p>预期：版本、命令和配置路径均可在 README 中找到。</p>
+    </li>
+  </ol>
+
+  <h2>任务 4：同步版本号</h2>
+  <ol>
+    <li>
+      <strong>将项目版本从 0.2.17 更新为 0.2.18。</strong>
+      <p>同时修改 <code>package.json</code>、<code>package-lock.json</code> 顶层版本和锁文件根包版本，不改变依赖版本。</p>
+    </li>
+    <li>
+      <strong>验证三个版本来源一致。</strong>
+      <pre>npm pkg get version
+rg -n '"version": "0\.2\.18"|Version-0\.2\.18' package.json package-lock.json README.md</pre>
+      <p>预期：项目清单、锁文件和 README 均显示 0.2.18。</p>
+    </li>
+  </ol>
+
+  <h2>任务 5：完整验证</h2>
+  <ol>
+    <li>
+      <strong>运行完整测试。</strong>
+      <pre>npm run test:node
+python -m unittest discover -s tests -p "test_*.py" -v</pre>
+      <p>预期：全部测试通过，零失败。</p>
+    </li>
+    <li>
+      <strong>运行生产构建。</strong>
+      <pre>npm run build</pre>
+      <p>预期：Vite 构建退出码为 0，输出进入已忽略的 <code>dist/</code>。</p>
+    </li>
+    <li>
+      <strong>扫描当前跟踪文件与 Git 历史。</strong>
+      <p>扫描模式包括私钥头、GitHub/OpenAI/Google/AWS 密钥格式、常见凭据赋值、用户目录和邮箱；依赖锁文件中的维护者邮箱作为第三方元数据排除。</p>
+      <p>预期：除已知依赖元数据外，没有真实凭据或个人路径。</p>
+    </li>
+    <li>
+      <strong>检查差异质量和忽略边界。</strong>
+      <pre>git diff --check
+git diff --cached --check
+git status -sb
+git status --ignored --short</pre>
+      <p>预期：无空白错误；本地配置和运行数据被忽略；上层目录个人文件不属于仓库。</p>
+    </li>
+    <li>
+      <strong>确认本轮不进行发布操作。</strong>
+      <pre>git log -1 --oneline
+git remote -v</pre>
+      <p>预期：除已确认的设计说明提交外没有新增实际修改提交；不执行 <code>git push</code> 或 PR 操作。</p>
+    </li>
+  </ol>
+</body>
+</html>

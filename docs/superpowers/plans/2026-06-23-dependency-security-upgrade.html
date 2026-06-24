@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>依赖安全补丁升级实施计划</title>
+  <style>
+    body { max-width: 960px; margin: 40px auto; padding: 0 24px 64px; color: #172033; font: 16px/1.7 system-ui, sans-serif; }
+    h1, h2, h3 { line-height: 1.3; }
+    code, pre { border-radius: 5px; background: #eef2f7; }
+    code { padding: .15em .35em; }
+    pre { overflow-x: auto; padding: 14px 16px; white-space: pre-wrap; }
+    .meta { padding: 14px 18px; border-left: 4px solid #2563eb; background: #eff6ff; }
+  </style>
+</head>
+<body>
+  <h1>依赖安全补丁升级实施计划</h1>
+
+  <div class="meta">
+    <p><strong>执行子技能：</strong>使用 superpowers:executing-plans 逐项执行。</p>
+    <p><strong>目标：</strong>通过兼容补丁版本消除当前 npm 安全漏洞，并将项目更新为 0.2.19。</p>
+    <p><strong>架构：</strong>不修改业务代码，仅让 npm 重新解析已修复的 Vite 与传递依赖版本。以审计结果、依赖树、完整测试和生产构建作为验收门槛。</p>
+    <p><strong>技术栈：</strong>npm、Vite、Electron、Node.js、Python。</p>
+  </div>
+
+  <h2>任务 1：记录修复前基线</h2>
+  <p><strong>涉及文件：</strong>只读检查 <code>package.json</code>、<code>package-lock.json</code>。</p>
+  <ol>
+    <li><label><input type="checkbox"> 运行 <code>npm audit --audit-level=low</code>。</label></li>
+    <li>预期：命令失败并报告 <code>vite</code>、<code>form-data</code>、<code>undici</code> 三类漏洞。</li>
+    <li><label><input type="checkbox"> 运行 <code>npm ls vite undici form-data --all</code>。</label></li>
+    <li>预期：看到 Vite 6.4.2、form-data 4.0.5、undici 6.26.0 与 7.27.2。</li>
+  </ol>
+
+  <h2>任务 2：执行最小安全升级</h2>
+  <p><strong>修改文件：</strong><code>package.json</code>、<code>package-lock.json</code>。</p>
+  <ol>
+    <li><label><input type="checkbox"> 执行不带强制参数的修复：</label></li>
+  </ol>
+  <pre>npm audit fix</pre>
+  <p>预期：Vite 更新为 6.4.3；form-data 更新为 4.0.6；undici 更新为 6.27.0 与 7.28.0；不发生主版本升级。</p>
+  <ol start="2">
+    <li><label><input type="checkbox"> 检查 <code>package.json</code> 中 Vite 仍限制在 6.x。</label></li>
+    <li><label><input type="checkbox"> 检查锁文件只包含预期依赖补丁变化。</label></li>
+  </ol>
+
+  <h2>任务 3：同步版本和文档</h2>
+  <p><strong>修改文件：</strong><code>package.json</code>、<code>package-lock.json</code>、<code>README.md</code>。</p>
+  <ol>
+    <li><label><input type="checkbox"> 将项目版本从 0.2.18 更新为 0.2.19。</label></li>
+    <li><label><input type="checkbox"> 将 README 徽章和更新标题更新为 0.2.19。</label></li>
+    <li><label><input type="checkbox"> 在更新说明中加入依赖安全补丁。</label></li>
+    <li><label><input type="checkbox"> 删除 README 中“当前仍有 npm audit 告警”的过时限制。</label></li>
+  </ol>
+
+  <h2>任务 4：验证依赖修复</h2>
+  <ol>
+    <li><label><input type="checkbox"> 运行 <code>npm audit --audit-level=low</code>。</label></li>
+    <li>预期：退出码为 0，报告 <code>found 0 vulnerabilities</code>。</li>
+    <li><label><input type="checkbox"> 运行 <code>npm ls vite undici form-data --all</code>。</label></li>
+    <li>预期：只出现已修复版本，不出现已知受影响版本。</li>
+    <li><label><input type="checkbox"> 运行 <code>npm run test:node</code>。</label></li>
+    <li>预期：133 项测试全部通过。</li>
+    <li><label><input type="checkbox"> 运行 <code>python -m unittest discover -s tests -p "test_*.py" -v</code>。</label></li>
+    <li>预期：6 项测试全部通过。</li>
+    <li><label><input type="checkbox"> 运行 <code>npm run build</code>。</label></li>
+    <li>预期：Vite 6.4.3 构建成功。</li>
+    <li><label><input type="checkbox"> 运行 <code>node --test tests/desktop-packaging.test.mjs tests/electron-builder-portable-patch.test.mjs</code>。</label></li>
+    <li>预期：桌面打包配置测试全部通过。</li>
+  </ol>
+
+  <h2>任务 5：保存本地待提交状态</h2>
+  <ol>
+    <li><label><input type="checkbox"> 运行 <code>git diff --check</code> 与 <code>git diff --cached --check</code>。</label></li>
+    <li><label><input type="checkbox"> 将依赖、安全文档和版本修改加入现有暂存集合。</label></li>
+    <li><label><input type="checkbox"> 确认没有执行实际修改提交、推送或 Pull Request。</label></li>
+  </ol>
+</body>
+</html>
