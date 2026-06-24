@@ -21,7 +21,8 @@
 
 | 原视频 | 翻译后效果 |
 | :---: | :---: |
-| [🎬 点击播放原视频](docs/assets/0.004_original.mp4) | [🔊 点击播放翻译后效果](docs/assets/0.004_translated.mp4) |
+| [🎬 点击播放原视频](https://youtu.be/eXMGXod8xZA?is=2jFKskscZBL4gBrq) | [🔊 点击播放翻译后效果](https://youtu.be/k0C39WoKOhY?is=9NcQgbUzsMdRNtyH) |
+| [![原视频](https://img.youtube.com/vi/eXMGXod8xZA/0.jpg)](https://youtu.be/eXMGXod8xZA?is=2jFKskscZBL4gBrq) | [![翻译后效果](https://img.youtube.com/vi/k0C39WoKOhY/0.jpg)](https://youtu.be/k0C39WoKOhY?is=9NcQgbUzsMdRNtyH) |
 
 ## 项目能力
 
