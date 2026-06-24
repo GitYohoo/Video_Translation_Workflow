@@ -17,6 +17,23 @@
 > [!IMPORTANT]
 > 项目目前主要面向 Windows 和 NVIDIA CUDA 环境，仍属于个人工作流工具，不是开箱即用的云服务。AI 模型、Python 环境、FFmpeg 和 Hugging Face 访问权限需要按本机环境配置。
 
+## 效果演示
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <strong>原视频</strong>
+      <br><br>
+      <video src="docs/assets/0.004_original.mp4" controls width="100%"></video>
+    </td>
+    <td align="center" width="50%">
+      <strong>翻译后效果</strong>
+      <br><br>
+      <video src="docs/assets/0.004_translated.mp4" controls width="100%"></video>
+    </td>
+  </tr>
+</table>
+
 ## 项目能力
 
 影译工坊把视频翻译制作拆分为可检查、可重试的本地任务：

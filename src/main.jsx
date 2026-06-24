@@ -2,6 +2,7 @@ import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   HashRouter,
+  Link,
   NavLink,
   Navigate,
   Route,
@@ -771,7 +772,7 @@ function Sidebar({
 }) {
   return (
     <aside className="sidebar">
-      <div className="brand">
+      <Link className="brand" to="/" style={{ color: "inherit", textDecoration: "none", cursor: "pointer" }}>
         <span className="brand-mark" aria-hidden="true">
           <Clapperboard size={20} strokeWidth={2.2} />
         </span>
@@ -779,7 +780,7 @@ function Sidebar({
           <strong className="brand-label">影译工坊</strong>
           <small>本地视频制作台</small>
         </span>
-      </div>
+      </Link>
       <button
         className="upload-button"
         disabled={isAddingVideo}
@@ -854,18 +855,6 @@ function WelcomePage({ videos, isAddingVideo, onAddPath }) {
             {isAddingVideo ? "正在添加..." : "选择原视频"}
           </button>
         </header>
-
-        <section className="workflow-start" aria-labelledby="workflow-start-title">
-          <div className="workflow-start-icon"><Play aria-hidden="true" size={22} fill="currentColor" /></div>
-          <div className="workflow-start-copy">
-            <h2 id="workflow-start-title">一次点击完成字幕流程</h2>
-            <p>点击开始后自动处理中间产物，完成后直接播放视频并校对最终字幕。</p>
-          </div>
-          <ol className="start-stages">
-            <li><span>01</span><strong>点击开始生成</strong></li>
-            <li><span>02</span><strong>播放与校对</strong></li>
-          </ol>
-        </section>
 
         <section className="recent-projects" aria-labelledby="recent-projects-title">
           <header>
