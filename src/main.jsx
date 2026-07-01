@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   HashRouter,
@@ -17,6 +17,7 @@ import {
   FolderPlus,
   HardDrive,
   Play,
+  Plus,
   Settings2,
   Trash2,
   X,
@@ -285,6 +286,66 @@ function formatTimelineSeconds(value) {
   const minutes = Math.floor((seconds % 3600) / 60);
   const remainder = (seconds % 60).toFixed(3).padStart(6, "0");
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${remainder}`;
+}
+
+function parseSubtitleTimeMs(value) {
+  const match = /^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})$/.exec(String(value || "").trim());
+  if (!match) {
+    return null;
+  }
+  const [, hours, minutes, seconds, milliseconds] = match;
+  return (
+    Number(hours) * 3_600_000 +
+    Number(minutes) * 60_000 +
+    Number(seconds) * 1000 +
+    Number(milliseconds)
+  );
+}
+
+function formatSubtitleTimeMs(value) {
+  const total = Math.max(0, Math.round(Number(value) || 0));
+  const hours = Math.floor(total / 3_600_000);
+  const minutes = Math.floor((total % 3_600_000) / 60_000);
+  const seconds = Math.floor((total % 60_000) / 1000);
+  const milliseconds = total % 1000;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(milliseconds).padStart(3, "0")}`;
+}
+
+function cueBoundaryMs(cue, boundary) {
+  const stored = boundary === "start" ? cue?.startMs : cue?.endMs;
+  return Number.isFinite(stored) ? stored : parseSubtitleTimeMs(cue?.[boundary]);
+}
+
+function insertedCueTiming(cues, index) {
+  const cue = cues[index] || {};
+  const nextCue = cues[index + 1] || null;
+  const startMs = cueBoundaryMs(cue, "end") ?? cueBoundaryMs(cue, "start") ?? 0;
+  const nextStartMs = nextCue ? cueBoundaryMs(nextCue, "start") : null;
+  const endMs = Number.isFinite(nextStartMs) && nextStartMs > startMs
+    ? nextStartMs
+    : startMs + 100;
+  return {
+    start: formatSubtitleTimeMs(startMs),
+    end: formatSubtitleTimeMs(endMs),
+    startMs,
+    endMs,
+  };
+}
+
+function withRenumberedCues(cues) {
+  return cues.map((cue, index) => ({ ...cue, number: index + 1 }));
+}
+
+function withUpdatedCueTime(cue, field, value) {
+  if (field === "start") {
+    const startMs = parseSubtitleTimeMs(value);
+    return { ...cue, start: value, ...(startMs === null ? {} : { startMs }) };
+  }
+  if (field === "end") {
+    const endMs = parseSubtitleTimeMs(value);
+    return { ...cue, end: value, ...(endMs === null ? {} : { endMs }) };
+  }
+  return { ...cue, [field]: value };
 }
 
 function mergeTimelineRanges(ranges) {
@@ -1279,9 +1340,31 @@ function SimplifiedVideoPage({ videos, isLoading }) {
 
   const updateCueField = (number, field, value) => {
     setEditorCues((current) => current.map(
-      (cue) => (cue.number === number ? { ...cue, [field]: value } : cue),
+      (cue) => (cue.number === number ? withUpdatedCueTime(cue, field, value) : cue),
     ));
     setEditorMessage("");
+  };
+
+  const insertChineseCueAfter = (number) => {
+    setEditorError("");
+    setEditorMessage("");
+    setEditorCues((current) => {
+      const index = current.findIndex((cue) => cue.number === number);
+      if (index < 0) {
+        return current;
+      }
+      const timing = insertedCueTiming(current, index);
+      return withRenumberedCues([
+        ...current.slice(0, index + 1),
+        {
+          number: number + 1,
+          ...timing,
+          speaker: "",
+          text: "",
+        },
+        ...current.slice(index + 1),
+      ]);
+    });
   };
 
   const applySpeakerToMatchingCues = (number) => {
@@ -1321,7 +1404,13 @@ function SimplifiedVideoPage({ videos, isLoading }) {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cues: editorCues.map(({ number, speaker, text }) => ({ number, speaker, text })),
+          cues: editorCues.map(({ number, start, end, speaker, text }) => ({
+            number,
+            start,
+            end,
+            speaker,
+            text,
+          })),
         }),
       });
       setEditorCues(result.cues || []);
@@ -1635,7 +1724,7 @@ function SimplifiedVideoPage({ videos, isLoading }) {
                   <div>
                     <p className="eyebrow">边看边改</p>
                     <h2>更正最终中文字幕</h2>
-                    <p>点击时间码可跳到对应画面，时间轴保持只读。</p>
+                    <p>点击编号可跳到对应画面，也可以直接修改时间和字幕正文。</p>
                   </div>
                   <button className="primary-button" disabled={isSaving || editorCues.length === 0} type="button" onClick={saveChineseSubtitles}>
                     {isSaving ? "正在保存..." : "保存中文字幕"}
@@ -1645,37 +1734,68 @@ function SimplifiedVideoPage({ videos, isLoading }) {
                 {editorMessage && <p className="copy-status">{editorMessage}</p>}
                 {editorCues.length === 0 && !editorError && <p className="copy-status">正在读取最终中文字幕...</p>}
                 <div className="chinese-cue-list">
-                  {editorCues.map((cue) => (
-                    <article className={`chinese-cue-row ${activeCueNumber === cue.number ? "active" : ""}`} key={cue.number}>
-                      <button className="cue-time-button" type="button" onClick={() => seekToCue(cue)}>
-                        <strong>{String(cue.number).padStart(3, "0")}</strong>
-                        <span>{cue.start} - {cue.end}</span>
-                      </button>
-                      <div className="cue-speaker-field">
-                        <span>Speaker</span>
-                        <input
-                          aria-label={`第 ${cue.number} 条说话人`}
-                          maxLength={200}
-                          placeholder="未标注"
-                          type="text"
-                          value={cue.speaker || ""}
-                          onChange={(event) => updateCueField(cue.number, "speaker", event.target.value)}
+                  {editorCues.map((cue, index) => (
+                    <Fragment key={cue.number}>
+                      <article className={`chinese-cue-row ${activeCueNumber === cue.number ? "active" : ""}`}>
+                        <div className="cue-time-field">
+                          <button className="cue-number-button" type="button" onClick={() => seekToCue(cue)}>
+                            {String(cue.number).padStart(3, "0")}
+                          </button>
+                          <div className="subtitle-time-fields">
+                            <input
+                              aria-label={`第 ${cue.number} 条中文字幕开始时间`}
+                              type="text"
+                              value={cue.start}
+                              onChange={(event) => updateCueField(cue.number, "start", event.target.value)}
+                            />
+                            <span>-</span>
+                            <input
+                              aria-label={`第 ${cue.number} 条中文字幕结束时间`}
+                              type="text"
+                              value={cue.end}
+                              onChange={(event) => updateCueField(cue.number, "end", event.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <div className="cue-speaker-field">
+                          <span>Speaker</span>
+                          <input
+                            aria-label={`第 ${cue.number} 条说话人`}
+                            maxLength={200}
+                            placeholder="未标注"
+                            type="text"
+                            value={cue.speaker || ""}
+                            onChange={(event) => updateCueField(cue.number, "speaker", event.target.value)}
+                          />
+                          <button
+                            className="role-apply-button"
+                            type="button"
+                            onClick={() => applySpeakerToMatchingCues(cue.number)}
+                          >
+                            应用到同角色
+                          </button>
+                        </div>
+                        <textarea
+                          aria-label={`第 ${cue.number} 条中文字幕`}
+                          rows={2}
+                          value={cue.text}
+                          onChange={(event) => updateCueField(cue.number, "text", event.target.value)}
                         />
-                        <button
-                          className="role-apply-button"
-                          type="button"
-                          onClick={() => applySpeakerToMatchingCues(cue.number)}
-                        >
-                          应用到同角色
-                        </button>
-                      </div>
-                      <textarea
-                        aria-label={`第 ${cue.number} 条中文字幕`}
-                        rows={2}
-                        value={cue.text}
-                        onChange={(event) => updateCueField(cue.number, "text", event.target.value)}
-                      />
-                    </article>
+                      </article>
+                      {index < editorCues.length - 1 && (
+                        <div className="subtitle-insert-row">
+                          <button
+                            aria-label={`在第 ${cue.number} 条中文字幕后新增字幕`}
+                            className="subtitle-insert-button"
+                            title="新增字幕"
+                            type="button"
+                            onClick={() => insertChineseCueAfter(cue.number)}
+                          >
+                            <Plus size={16} strokeWidth={2.4} aria-hidden="true" />
+                          </button>
+                        </div>
+                      )}
+                    </Fragment>
                   ))}
                 </div>
               </section>
@@ -2195,9 +2315,33 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
             skipped: !english.trim(),
           };
         }
-        return { ...cue, [field]: value };
+        return withUpdatedCueTime(cue, field, value);
       }),
     );
+  };
+
+  const insertSubtitleCueAfter = (number) => {
+    setSubtitleEditorMessage("");
+    setSubtitleEditorError("");
+    setSubtitleEditorCues((cues) => {
+      const index = cues.findIndex((cue) => cue.number === number);
+      if (index < 0) {
+        return cues;
+      }
+      const timing = insertedCueTiming(cues, index);
+      return withRenumberedCues([
+        ...cues.slice(0, index + 1),
+        {
+          number: number + 1,
+          ...timing,
+          role: "",
+          chinese: "",
+          english: "",
+          skipped: true,
+        },
+        ...cues.slice(index + 1),
+      ]);
+    });
   };
 
   const applyRoleToMatchingCues = (number) => {
@@ -2258,9 +2402,12 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cues: subtitleEditorCues.map(({ number, role, english, skipped }) => ({
+          cues: subtitleEditorCues.map(({ number, start, end, role, chinese, english, skipped }) => ({
             number,
+            start,
+            end,
             role,
+            chinese,
             english,
             skipped,
           })),
@@ -3036,38 +3183,73 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
                   </section>
                   <div className="subtitle-editor-table" role="table" aria-label="字幕翻译与角色校对">
                     <div className="subtitle-editor-header" role="row">
-                      <span>时间 / 中文</span>
+                      <span>时间 / 中文字幕</span>
                       <span>角色</span>
                       <span>英文字幕</span>
                     </div>
-                    {subtitleEditorCues.map((cue) => (
-                      <div className="subtitle-editor-row" role="row" key={cue.number}>
-                        <div className="subtitle-source">
-                          <strong>{String(cue.number).padStart(3, "0")} · {cue.start} - {cue.end}</strong>
-                          <p>{cue.chinese}</p>
-                        </div>
-                        <div className="subtitle-role-field">
-                          <input
-                            aria-label={`第 ${cue.number} 条角色`}
-                            type="text"
-                            value={cue.role}
-                            onChange={(event) => updateSubtitleCue(cue.number, "role", event.target.value)}
+                    {subtitleEditorCues.map((cue, index) => (
+                      <Fragment key={cue.number}>
+                        <div className="subtitle-editor-row" role="row">
+                          <div className="subtitle-source">
+                            <strong>{String(cue.number).padStart(3, "0")}</strong>
+                            <div className="subtitle-time-fields">
+                              <input
+                                aria-label={`第 ${cue.number} 条开始时间`}
+                                type="text"
+                                value={cue.start}
+                                onChange={(event) => updateSubtitleCue(cue.number, "start", event.target.value)}
+                              />
+                              <span>-</span>
+                              <input
+                                aria-label={`第 ${cue.number} 条结束时间`}
+                                type="text"
+                                value={cue.end}
+                                onChange={(event) => updateSubtitleCue(cue.number, "end", event.target.value)}
+                              />
+                            </div>
+                            <textarea
+                              aria-label={`第 ${cue.number} 条中文字幕`}
+                              rows={2}
+                              value={cue.chinese}
+                              onChange={(event) => updateSubtitleCue(cue.number, "chinese", event.target.value)}
+                            />
+                          </div>
+                          <div className="subtitle-role-field">
+                            <input
+                              aria-label={`第 ${cue.number} 条角色`}
+                              type="text"
+                              value={cue.role}
+                              onChange={(event) => updateSubtitleCue(cue.number, "role", event.target.value)}
+                            />
+                            <button
+                              className="role-apply-button"
+                              type="button"
+                              onClick={() => applyRoleToMatchingCues(cue.number)}
+                            >
+                              应用到同角色
+                            </button>
+                          </div>
+                          <textarea
+                            aria-label={`第 ${cue.number} 条英文字幕`}
+                            rows={2}
+                            value={cue.english}
+                            onChange={(event) => updateSubtitleCue(cue.number, "english", event.target.value)}
                           />
-                          <button
-                            className="role-apply-button"
-                            type="button"
-                            onClick={() => applyRoleToMatchingCues(cue.number)}
-                          >
-                            应用到同角色
-                          </button>
                         </div>
-                        <textarea
-                          aria-label={`第 ${cue.number} 条英文字幕`}
-                          rows={2}
-                          value={cue.english}
-                          onChange={(event) => updateSubtitleCue(cue.number, "english", event.target.value)}
-                        />
-                      </div>
+                        {index < subtitleEditorCues.length - 1 && (
+                          <div className="subtitle-insert-row">
+                            <button
+                              aria-label={`在第 ${cue.number} 条双语字幕后新增字幕`}
+                              className="subtitle-insert-button"
+                              title="新增字幕"
+                              type="button"
+                              onClick={() => insertSubtitleCueAfter(cue.number)}
+                            >
+                              <Plus size={16} strokeWidth={2.4} aria-hidden="true" />
+                            </button>
+                          </div>
+                        )}
+                      </Fragment>
                     ))}
                   </div>
                   {subtitleEditorError && <p className="workflow-error">{subtitleEditorError}</p>}

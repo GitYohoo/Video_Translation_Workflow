@@ -43,7 +43,7 @@ test("renders the source video and Chinese subtitle editor on the result page", 
   assert.match(source, /aria-label="最终中文字幕编辑器"/);
   assert.match(source, /保存中文字幕/);
   assert.match(source, /aria-label=\{`第 \$\{cue\.number\} 条说话人`\}/);
-  assert.match(source, /editorCues\.map\(\(\{ number, speaker, text \}\)/);
+  assert.match(source, /editorCues\.map\(\(\{ number, start, end, speaker, text \}\)/);
 });
 
 test("lets final Chinese subtitle speakers be applied to matching original speakers", () => {
@@ -129,6 +129,27 @@ test("keeps only the requested translation artifacts on the compact translation 
   assert.doesNotMatch(translationPanelSource, /Gemini 输入：最终中文字幕 SRT/);
   assert.doesNotMatch(translationPanelSource, /Gemini 输出：翻译与整句分段 JSON/);
   assert.doesNotMatch(translationPanelSource, /subtitle-editor-skip-hint/);
+});
+
+test("allows editing subtitle time, Chinese text, and English text in the translation table", () => {
+  assert.match(translationPanelSource, /aria-label=\{`第 \$\{cue\.number\} 条开始时间`\}/);
+  assert.match(translationPanelSource, /updateSubtitleCue\(cue\.number, "start", event\.target\.value\)/);
+  assert.match(translationPanelSource, /aria-label=\{`第 \$\{cue\.number\} 条中文字幕`\}/);
+  assert.match(translationPanelSource, /updateSubtitleCue\(cue\.number, "chinese", event\.target\.value\)/);
+  assert.match(translationPanelSource, /aria-label=\{`第 \$\{cue\.number\} 条英文字幕`\}/);
+  assert.match(translationPanelSource, /updateSubtitleCue\(cue\.number, "english", event\.target\.value\)/);
+  assert.match(source, /map\(\(\{ number, start, end, role, chinese, english, skipped \}\)/);
+});
+
+test("shows insert subtitle controls in both Chinese and bilingual editors", () => {
+  assert.match(reviewChinesePanelSource, /insertChineseCueAfter/);
+  assert.match(reviewChinesePanelSource, /className="subtitle-insert-button"/);
+  assert.match(reviewChinesePanelSource, /aria-label=\{`在第 \$\{cue\.number\} 条中文字幕后新增字幕`\}/);
+  assert.match(translationPanelSource, /insertSubtitleCueAfter/);
+  assert.match(translationPanelSource, /className="subtitle-insert-button"/);
+  assert.match(translationPanelSource, /aria-label=\{`在第 \$\{cue\.number\} 条双语字幕后新增字幕`\}/);
+  assert.match(styles, /\.subtitle-insert-row/);
+  assert.match(styles, /\.subtitle-insert-button/);
 });
 
 test("removes non-actionable translation and final-video ready hints", () => {

@@ -45,6 +45,40 @@ test("saves speaker and edited text while preserving numbering and timecodes", a
   assert.match(saved, /00:00:03,000 --> 00:00:04,000\n修改后的第二条/);
 });
 
+test("saves an inserted Chinese subtitle cue", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "chinese-editor-"));
+  const filePath = path.join(directory, "示例_最终中文字幕.srt");
+  await fs.writeFile(filePath, sample, "utf8");
+
+  await saveChineseSubtitleFile(filePath, [
+    {
+      number: 1,
+      start: "00:00:01,000",
+      end: "00:00:02,500",
+      speaker: "旁白",
+      text: "旧字幕",
+    },
+    {
+      number: 2,
+      start: "00:00:02,600",
+      end: "00:00:02,900",
+      speaker: "",
+      text: "手工新增中文字幕",
+    },
+    {
+      number: 3,
+      start: "00:00:03,000",
+      end: "00:00:04,000",
+      speaker: "",
+      text: "第二条",
+    },
+  ]);
+
+  const saved = await fs.readFile(filePath, "utf8");
+  assert.match(saved, /2\n00:00:02,600 --> 00:00:02,900\n手工新增中文字幕/);
+  assert.match(saved, /3\n00:00:03,000 --> 00:00:04,000\n第二条/);
+});
+
 test("allows empty edited text and keeps the cue readable", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "chinese-editor-"));
   const filePath = path.join(directory, "示例_最终中文字幕.srt");

@@ -502,6 +502,17 @@ function parseSubtitleMilliseconds(value) {
   );
 }
 
+function normalizeEditableSubtitleTime(value, label) {
+  if (typeof value !== "string") {
+    throw new Error(`${label}时间格式无效。`);
+  }
+  const normalized = value.trim().replace(".", ",");
+  if (!/^\d{2}:\d{2}:\d{2},\d{3}$/.test(normalized)) {
+    throw new Error(`${label}时间格式无效。`);
+  }
+  return normalized;
+}
+
 function parseEditableSubtitleDocument(content, label) {
   const blocks = content
     .replace(/^\uFEFF/, "")
@@ -805,7 +816,7 @@ async function importTranslatedSubtitleFile(record) {
   };
 }
 
-async function saveSubtitleEditor(record, requestedCues) {
+export async function saveSubtitleEditor(record, requestedCues) {
   if (activeEnglishDubbingTasks.get(record.id)?.status === "running") {
     throw new Error("英文配音正在运行，完成后再保存字幕修改。");
   }
@@ -821,45 +832,80 @@ async function saveSubtitleEditor(record, requestedCues) {
     "最终中文字幕",
   );
   validateEditableMasterTimeline(canonical);
-  if (requestedCues.length !== canonical.length) {
+  if (requestedCues.length < canonical.length) {
     throw new Error(`字幕条目数量不一致：应为 ${canonical.length} 条。`);
   }
   const requestedByNumber = new Map();
-  for (const requested of requestedCues) {
-    if (!Number.isInteger(requested?.number) || requestedByNumber.has(requested.number)) {
-      throw new Error("字幕编号缺失或重复。");
+  for (const [index, requested] of requestedCues.entries()) {
+    const expectedNumber = index + 1;
+    if (!Number.isInteger(requested?.number) || requested.number !== expectedNumber) {
+      throw new Error(`字幕编号必须连续：期望第 ${expectedNumber} 段。`);
     }
+    const canonicalCue = canonical[index];
     const role = typeof requested.role === "string" ? requested.role.trim() : "";
     const english = typeof requested.english === "string" ? requested.english.trim() : "";
+    const chinese = typeof requested.chinese === "string"
+      ? requested.chinese.trim()
+      : subtitleRoleAndText(canonicalCue?.text || "").text;
+    const start = typeof requested.start === "string"
+      ? normalizeEditableSubtitleTime(requested.start, `第 ${requested.number} 段开始`)
+      : canonicalCue?.start;
+    const end = typeof requested.end === "string"
+      ? normalizeEditableSubtitleTime(requested.end, `第 ${requested.number} 段结束`)
+      : canonicalCue?.end;
+    if (!start || !end) {
+      throw new Error(`第 ${requested.number} 段字幕时间缺失。`);
+    }
+    const startMs = parseSubtitleMilliseconds(start);
+    const endMs = parseSubtitleMilliseconds(end);
     if (/[\[\]\r\n]/.test(role) || role.length > 80) {
       throw new Error(`第 ${requested.number} 段角色名格式无效。`);
+    }
+    if (endMs <= startMs) {
+      throw new Error(`第 ${requested.number} 段结束时间必须晚于开始时间。`);
+    }
+    if (chinese.length > 2000) {
+      throw new Error(`第 ${requested.number} 段中文字幕过长。`);
     }
     if (english.length > 1000) {
       throw new Error(`第 ${requested.number} 段英文字幕过长。`);
     }
-    requestedByNumber.set(requested.number, { role, english, skipped: !english });
+    requestedByNumber.set(requested.number, { role, chinese, english, start, end, startMs, endMs });
   }
   const chineseCues = [];
   const englishCues = [];
   const savedDraftCues = [];
-  for (const cue of canonical) {
-    const requested = requestedByNumber.get(cue.number);
+  for (const requestedCue of requestedCues) {
+    const requested = requestedByNumber.get(requestedCue.number);
     if (!requested) {
-      throw new Error(`缺少第 ${cue.number} 段字幕编辑内容。`);
+      throw new Error(`缺少第 ${requestedCue.number} 段字幕编辑内容。`);
     }
-    const chinese = subtitleRoleAndText(cue.text).text;
+    const chinese = requested.chinese;
     const english = requested.english || nonSpeechEnglishFallback(chinese);
-    chineseCues.push({ ...cue, text: taggedSubtitleText(requested.role, chinese) });
+    const canonicalCue = canonical[requestedCue.number - 1] || {};
+    const timedCue = {
+      ...canonicalCue,
+      number: requestedCue.number,
+      start: requested.start,
+      end: requested.end,
+      startMs: requested.startMs,
+      endMs: requested.endMs,
+    };
+    chineseCues.push({ ...timedCue, text: taggedSubtitleText(requested.role, chinese) });
     if (english) {
-      englishCues.push({ ...cue, text: taggedSubtitleText(requested.role, english) });
+      englishCues.push({ ...timedCue, text: taggedSubtitleText(requested.role, english) });
     }
     savedDraftCues.push({
-      number: cue.number,
+      number: requestedCue.number,
+      start: requested.start,
+      end: requested.end,
       role: requested.role,
+      chinese,
       english,
       skipped: !english,
     });
   }
+  validateEditableMasterTimeline(chineseCues);
   const chineseChanged = await writeFileIfChanged(
     paths.srtPath,
     serializeEditableSubtitleDocument(chineseCues),

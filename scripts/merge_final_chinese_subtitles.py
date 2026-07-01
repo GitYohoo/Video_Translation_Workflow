@@ -54,24 +54,48 @@ def read_speaker_cues(path: Path) -> list[dict]:
     for cue in read_srt(path):
         match = SPEAKER_PREFIX.match(cue["text"].replace("\n", " ").strip())
         if match:
-            speaker_cues.append({**cue, "speaker": match.group("speaker")})
+            speaker_cues.append(
+                {
+                    **cue,
+                    "text": match.group("text").strip(),
+                    "speaker": match.group("speaker"),
+                }
+            )
     return speaker_cues
+
+
+def overlap_seconds(first: dict, second: dict) -> float:
+    return min(first["end"], second["end"]) - max(first["start"], second["start"])
+
+
+def standalone_speaker_cue(cue: dict) -> dict:
+    output = dict(cue)
+    match = SPEAKER_PREFIX.match(output["text"].replace("\n", " ").strip())
+    if match:
+        output["text"] = match.group("text").strip()
+        output["speaker"] = output.get("speaker") or match.group("speaker")
+    return output
 
 
 def attach_speakers(ocr_cues: list[dict], speaker_cues: list[dict]) -> list[dict]:
     merged: list[dict] = []
+    overlapped_speaker_indexes: set[int] = set()
     for cue in ocr_cues:
         overlap_by_speaker: dict[str, float] = {}
-        for speaker_cue in speaker_cues:
-            overlap = min(cue["end"], speaker_cue["end"]) - max(cue["start"], speaker_cue["start"])
+        for index, speaker_cue in enumerate(speaker_cues):
+            overlap = overlap_seconds(cue, speaker_cue)
             if overlap > 0:
+                overlapped_speaker_indexes.add(index)
                 speaker = speaker_cue["speaker"]
                 overlap_by_speaker[speaker] = overlap_by_speaker.get(speaker, 0.0) + overlap
         output = dict(cue)
         if overlap_by_speaker:
             output["speaker"] = max(overlap_by_speaker.items(), key=lambda item: item[1])[0]
         merged.append(output)
-    return merged
+    for index, speaker_cue in enumerate(speaker_cues):
+        if index not in overlapped_speaker_indexes:
+            merged.append(standalone_speaker_cue(speaker_cue))
+    return sorted(merged, key=lambda cue: (cue["start"], cue["end"]))
 
 
 def display_text(cue: dict) -> str:

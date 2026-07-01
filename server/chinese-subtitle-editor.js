@@ -9,6 +9,17 @@ function milliseconds(value) {
   return Number(hours) * 3_600_000 + Number(minutes) * 60_000 + Number(seconds) * 1000 + Number(fraction);
 }
 
+function normalizeSubtitleTime(value, label) {
+  if (typeof value !== "string") {
+    throw new Error(`${label}时间格式无效。`);
+  }
+  const normalized = value.trim().replace(".", ",");
+  if (!/^\d{2}:\d{2}:\d{2},\d{3}$/.test(normalized)) {
+    throw new Error(`${label}时间格式无效。`);
+  }
+  return normalized;
+}
+
 function splitSpeaker(text) {
   const match = speakerPattern.exec(text);
   if (!match) {
@@ -71,15 +82,16 @@ export async function saveChineseSubtitleFile(filePath, requestedCues) {
     throw new Error("缺少字幕编辑内容。");
   }
   const canonical = parseChineseSubtitleDocument(await fs.readFile(filePath, "utf8"));
-  if (requestedCues.length !== canonical.length) {
+  if (requestedCues.length < canonical.length) {
     throw new Error(`字幕条目数量不一致：应为 ${canonical.length} 条。`);
   }
-  const requestedByNumber = new Map();
-  for (const cue of requestedCues) {
+  const updated = requestedCues.map((cue, index) => {
+    const expectedNumber = index + 1;
     const text = typeof cue?.text === "string" ? cue.text.trim() : "";
     const speaker = typeof cue?.speaker === "string" ? cue.speaker.trim() : undefined;
-    if (!Number.isInteger(cue?.number) || requestedByNumber.has(cue.number)) {
-      throw new Error("字幕编号缺失或重复。");
+    const canonicalCue = canonical[index];
+    if (!Number.isInteger(cue?.number) || cue.number !== expectedNumber) {
+      throw new Error(`字幕编号必须连续：期望第 ${expectedNumber} 条。`);
     }
     if (speaker?.includes("[") || speaker?.includes("]") || /[\r\n]/.test(speaker || "")) {
       throw new Error(`第 ${cue.number} 条说话人格式无效。`);
@@ -90,18 +102,34 @@ export async function saveChineseSubtitleFile(filePath, requestedCues) {
     if (text.length > 2000) {
       throw new Error(`第 ${cue.number} 条字幕正文过长。`);
     }
-    requestedByNumber.set(cue.number, { speaker, text });
-  }
-  const updated = canonical.map((cue) => {
-    if (!requestedByNumber.has(cue.number)) {
-      throw new Error(`缺少第 ${cue.number} 条字幕编辑内容。`);
+    const start = typeof cue.start === "string"
+      ? normalizeSubtitleTime(cue.start, `第 ${cue.number} 条开始`)
+      : canonicalCue?.start;
+    const end = typeof cue.end === "string"
+      ? normalizeSubtitleTime(cue.end, `第 ${cue.number} 条结束`)
+      : canonicalCue?.end;
+    if (!start || !end) {
+      throw new Error(`第 ${cue.number} 条字幕时间缺失。`);
     }
-    const requested = requestedByNumber.get(cue.number);
+    const startMs = milliseconds(start);
+    const endMs = milliseconds(end);
+    if (endMs <= startMs) {
+      throw new Error(`第 ${cue.number} 条字幕结束时间必须晚于开始时间。`);
+    }
     return {
-      ...cue,
-      speaker: requested.speaker === undefined ? cue.speaker : requested.speaker,
-      text: requested.text,
+      number: cue.number,
+      start,
+      end,
+      startMs,
+      endMs,
+      speaker: speaker === undefined ? canonicalCue?.speaker || "" : speaker,
+      text,
     };
+  });
+  updated.forEach((cue, index) => {
+    if (index > 0 && cue.startMs < updated[index - 1].endMs) {
+      throw new Error(`最终中文字幕第 ${cue.number - 1} 与 ${cue.number} 条时间重叠。`);
+    }
   });
   await fs.writeFile(filePath, serializeChineseSubtitleDocument(updated), "utf8");
   return { ...(await readChineseSubtitleFile(filePath)), saved: true };
