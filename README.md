@@ -1,16 +1,17 @@
 # Video Translation Workshop
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-0.2.33-blue.svg?style=flat-square" alt="Version 0.2.33">
+  <img src="https://img.shields.io/badge/Version-0.2.35-blue.svg?style=flat-square" alt="Version 0.2.35">
   <img src="https://img.shields.io/badge/Platform-Windows-0078d4.svg?style=flat-square" alt="Windows">
+  <img src="https://img.shields.io/badge/License-Non--Commercial-orange.svg?style=flat-square" alt="Non-commercial research and learning license">
   <img src="https://img.shields.io/badge/Electron-42.4.0-purple.svg?style=flat-square" alt="Electron 42.4.0">
   <img src="https://img.shields.io/badge/React-19.1.0-61dafb.svg?style=flat-square" alt="React 19.1.0">
   <img src="https://img.shields.io/badge/Express-5.1.0-green.svg?style=flat-square" alt="Express 5.1.0">
 </p>
 
 <p align="center">
-  A local-first Windows desktop workbench for Chinese video translation, subtitle review,
-  English AI dubbing, and final MP4 rendering.
+  Turn Chinese videos with burned-in subtitles into English-dubbed videos through a local,
+  inspectable Windows workflow.
 </p>
 
 > [!IMPORTANT]
@@ -18,12 +19,47 @@
 > It is designed primarily for Windows machines with an NVIDIA CUDA environment.
 > AI model runtimes, Python environments, FFmpeg, and Hugging Face access must be configured locally.
 
+## Why This Project Exists
+
+Most video translation tools focus on one step: transcription, subtitle translation, text-to-speech, or rendering. Video Translation Workshop connects the full local pipeline for creators and developers who need to inspect every intermediate artifact before producing a final English-dubbed video.
+
+It is built for workflows where privacy, retryability, and manual quality control matter more than one-click cloud automation.
+
+## Who It Is For
+
+- Creators localizing Chinese short dramas, clips, tutorials, or commentary videos into English.
+- Developers experimenting with local AI dubbing pipelines built around WhisperX, PaddleOCR, VoxCPM, and FFmpeg.
+- Teams that need a Windows desktop workflow where subtitles, speaker labels, dubbing segments, and final renders can be reviewed step by step.
+
+This is probably not the right project if you need a hosted SaaS product, a fully automated translation API, or a lightweight command-line-only tool.
+
 ## Demo
 
 | Original Video | Translated Result |
 | :---: | :---: |
 | [Watch original](https://youtu.be/eXMGXod8xZA?is=2jFKskscZBL4gBrq) | [Watch translated result](https://youtu.be/k0C39WoKOhY?is=9NcQgbUzsMdRNtyH) |
 | [![Original video](https://img.youtube.com/vi/eXMGXod8xZA/0.jpg)](https://youtu.be/eXMGXod8xZA?is=2jFKskscZBL4gBrq) | [![Translated result](https://img.youtube.com/vi/k0C39WoKOhY/0.jpg)](https://youtu.be/k0C39WoKOhY?is=9NcQgbUzsMdRNtyH) |
+
+## Highlights
+
+- Local-first processing for source media and generated artifacts.
+- End-to-end Chinese-to-English video localization workflow.
+- OCR extraction for burned-in Chinese subtitles.
+- WhisperX transcription and speaker labeling.
+- Manual Gemini prompt workflow for controlled translation review.
+- VoxCPM English dubbing with single-segment redubbing support.
+- FFmpeg rendering with burned English subtitles and final MP4 export.
+- Persistent job state, logs, and artifacts for long-running tasks.
+
+## Fastest Way to Evaluate
+
+If you only want to decide whether this project is worth installing:
+
+1. Watch the demo videos above.
+2. Read the [Typical Workflow](#typical-workflow) section to check whether the process matches your use case.
+3. Confirm you have a Windows machine with enough D-drive space and preferably an NVIDIA CUDA GPU.
+4. Run the development app with `npm run dev` before preparing every AI runtime.
+5. Test with a short video before processing production material.
 
 ## What It Does
 
@@ -206,6 +242,12 @@ Video_Translation_Workflow/
 `-- README.md           # GitHub repository homepage
 ```
 
+## Discovery Keywords
+
+People may find this project while searching for:
+
+`video translation`, `AI dubbing`, `subtitle translation`, `Chinese to English dubbing`, `WhisperX`, `PaddleOCR`, `VoxCPM`, `FFmpeg video rendering`, `Electron desktop app`, `local video localization`, `burned-in subtitle OCR`, `AI voice dubbing`.
+
 The following should stay local and should not be committed:
 
 - `.env*`, private keys, certificates, tokens, and credential files
@@ -247,13 +289,20 @@ Source development mode can use the repository's `data/` and `.runtime/` directo
 
 </details>
 
+## License
+
+This project is released under a custom non-commercial research and learning license.
+
+You may use, study, modify, and share it for non-commercial learning, research, evaluation, and personal experimentation. Commercial use, paid services, commercial bundling, sublicensing, or monetization require separate written permission from the copyright holder.
+
+See [LICENSE](LICENSE) for the full terms.
+
 ## Known Limitations
 
 - The automated workflow currently targets Chinese burned-in subtitles and English dubbing.
 - Gemini translation is still a manual prompt-copy and JSON-import workflow, not a fully automated API integration.
 - AI model environments are large; first-time setup depends heavily on network speed and disk performance.
 - Desktop packaging and runtime paths are currently optimized for Windows and D-drive storage.
-- The repository currently does not include an open-source license. Public visibility does not grant redistribution rights.
 - Dependency updates should be followed by `npm audit`, full tests, production build, and desktop package verification.
 
 ## Pre-Commit Checks

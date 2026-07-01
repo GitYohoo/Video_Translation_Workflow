@@ -2,8 +2,29 @@
   "name": "video-translation-workflow",
   "productName": "影译工坊",
   "private": true,
-  "version": "0.2.33",
-  "description": "面向本地视频翻译制作流程的桌面工作台",
+  "version": "0.2.35",
+  "description": "Local-first Windows desktop workflow for Chinese-to-English video translation, subtitle review, AI dubbing, and final MP4 rendering",
+  "license": "SEE LICENSE IN LICENSE",
+  "keywords": [
+    "video-translation",
+    "ai-dubbing",
+    "subtitle-translation",
+    "chinese-to-english",
+    "whisperx",
+    "paddleocr",
+    "voxcpm",
+    "ffmpeg",
+    "electron",
+    "local-first"
+  ],
+  "homepage": "https://github.com/GitYohoo/Video_Translation_Workflow#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GitYohoo/Video_Translation_Workflow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GitYohoo/Video_Translation_Workflow/issues"
+  },
   "author": "影译工坊",
   "main": "electron/main.js",
   "type": "module",

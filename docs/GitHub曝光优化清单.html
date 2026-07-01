@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub 曝光优化清单</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1f2937;
+      --muted: #667085;
+      --border: #d9dee7;
+      --accent: #2563eb;
+      --accent-soft: #e8f0ff;
+      --warning: #b45309;
+      --warning-soft: #fff4db;
+      --ok: #15803d;
+      --ok-soft: #e7f7ed;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      line-height: 1.65;
+    }
+
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 32px 18px 56px;
+    }
+
+    header,
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+
+    h1,
+    h2,
+    h3 {
+      line-height: 1.25;
+      margin: 0 0 12px;
+    }
+
+    h1 {
+      font-size: 2.1rem;
+    }
+
+    h2 {
+      font-size: 1.35rem;
+    }
+
+    h3 {
+      font-size: 1rem;
+      margin-top: 18px;
+    }
+
+    p {
+      margin: 0 0 12px;
+      color: var(--muted);
+    }
+
+    ul,
+    ol {
+      margin: 8px 0 0;
+      padding-left: 22px;
+    }
+
+    li + li {
+      margin-top: 6px;
+    }
+
+    code {
+      background: #eef1f6;
+      border: 1px solid #dce2ea;
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-family: Consolas, "SFMono-Regular", Menlo, monospace;
+      font-size: 0.92em;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 12px 0 0;
+      padding: 14px;
+      border-radius: 8px;
+      background: #111827;
+      color: #e5e7eb;
+      line-height: 1.5;
+    }
+
+    pre code {
+      background: transparent;
+      border: 0;
+      padding: 0;
+      color: inherit;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      background: #fbfcfe;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .notice {
+      border-left: 4px solid var(--warning);
+      background: var(--warning-soft);
+      color: #713f12;
+      padding: 14px 16px;
+      border-radius: 8px;
+    }
+
+    .done {
+      border-left: 4px solid var(--ok);
+      background: var(--ok-soft);
+      color: #14532d;
+      padding: 14px 16px;
+      border-radius: 8px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>GitHub 曝光优化清单</h1>
+      <p>这份清单记录仓库内已经处理的事项，以及需要到 GitHub 页面手动设置的事项。目标是让陌生访问者更容易搜索到、理解项目价值，并降低首次试用阻力。</p>
+    </header>
+
+    <section>
+      <h2>已在仓库内完成</h2>
+      <div class="done">
+        <ul>
+          <li><code>README.md</code> 已改成 GitHub 主页直接显示的英文介绍。</li>
+          <li>README 首屏增加目标定位、适用人群、亮点、最快评估路径和搜索关键词。</li>
+          <li><code>package.json</code> 增加英文 description、repository、homepage、bugs 和 keywords。</li>
+          <li>版本号已同步更新到 <code>0.2.35</code>。</li>
+          <li>已增加非商业学习研究用途许可证：<code>LICENSE</code>。</li>
+        </ul>
+      </div>
+    </section>
+
+    <section>
+      <h2>GitHub 页面需要手动设置</h2>
+      <ol>
+        <li>进入仓库首页右侧 About 区域，点击设置图标。</li>
+        <li>把 Description 设置为下面这一句。</li>
+        <li>添加 Topics。</li>
+        <li>确认 GitHub About 区域能识别并展示 License。</li>
+        <li>发布一个 Release，最好包含 Windows 安装版或便携版。</li>
+      </ol>
+
+      <h3>建议 Description</h3>
+      <pre><code>Local-first Windows workflow for Chinese-to-English video translation, subtitle review, AI dubbing, and MP4 rendering.</code></pre>
+
+      <h3>建议 Topics</h3>
+      <pre><code>video-translation
+ai-dubbing
+subtitle-translation
+chinese-to-english
+whisperx
+paddleocr
+voxcpm
+ffmpeg
+electron
+local-first
+video-localization
+text-to-speech</code></pre>
+    </section>
+
+    <section>
+      <h2>发布 Release 前检查</h2>
+      <ul>
+        <li>确认 README 顶部的演示视频链接可访问。</li>
+        <li>运行 <code>npm run test:node</code>。</li>
+        <li>运行 Python 测试：<code>python -m unittest discover -s tests -p "test_*.py" -v</code>。</li>
+        <li>运行 <code>npm run build</code>。</li>
+        <li>运行 <code>npm run desktop:dist</code> 生成安装版和便携版。</li>
+        <li>Release 标题建议使用：<code>Video Translation Workshop v0.2.35</code>。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>推荐发布文案</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>短版</h3>
+          <p>适合 GitHub Release、X、即刻、V2EX 短帖。</p>
+          <pre><code>I built a local-first Windows workflow for turning Chinese videos with burned-in subtitles into English-dubbed MP4s. It combines PaddleOCR, WhisperX, VoxCPM, FFmpeg, React, Express, and Electron, with every intermediate subtitle/audio artifact inspectable and retryable.</code></pre>
+        </div>
+        <div class="card">
+          <h3>长版</h3>
+          <p>适合 Reddit、Hacker News、论坛或项目介绍文章。</p>
+          <pre><code>Video Translation Workshop is a local-first Windows desktop app for Chinese-to-English video localization. It extracts burned-in Chinese subtitles, identifies speakers, helps prepare Gemini translation prompts, imports reviewed translation JSON, generates English AI dubbing, and renders the final English-dubbed MP4. The project is designed for creators and developers who want inspectable intermediate files instead of a black-box cloud workflow.</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>建议分发渠道</h2>
+      <ul>
+        <li>GitHub Release：放安装包、便携包、演示视频链接和变更说明。</li>
+        <li>Bilibili / YouTube：用真实视频演示从导入到最终英文配音成片的流程。</li>
+        <li>V2EX / 即刻 / 少数派：强调本地工作流、D 盘模型缓存、中文短剧翻译场景。</li>
+        <li>Reddit：可以投向 <code>r/LocalLLaMA</code>、<code>r/VideoEditing</code>、<code>r/MachineLearning</code>，但要用技术说明而不是硬广告。</li>
+        <li>相关项目 Discussion：只在确实相关时分享经验，例如 WhisperX、PaddleOCR、FFmpeg、TTS 工作流相关讨论。</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>暂不自动处理的事项</h2>
+      <div class="notice">
+        <ul>
+          <li>GitHub Topics、About Description、Social Preview 需要在 GitHub 网页手动设置。</li>
+          <li>真实安装包 Release 需要先确认当前代码、模型依赖和打包产物可用。</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
