@@ -1,7 +1,7 @@
 # Video Translation Workshop
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-0.2.35-blue.svg?style=flat-square" alt="Version 0.2.35">
+  <img src="https://img.shields.io/badge/Version-0.2.37-blue.svg?style=flat-square" alt="Version 0.2.37">
   <img src="https://img.shields.io/badge/Platform-Windows-0078d4.svg?style=flat-square" alt="Windows">
   <img src="https://img.shields.io/badge/License-Non--Commercial-orange.svg?style=flat-square" alt="Non-commercial research and learning license">
   <img src="https://img.shields.io/badge/Electron-42.4.0-purple.svg?style=flat-square" alt="Electron 42.4.0">
@@ -66,7 +66,7 @@ If you only want to decide whether this project is worth installing:
 Video Translation Workshop breaks video localization into local, inspectable, and retryable tasks:
 
 1. Separate dialogue and background music/effects tracks with BS-RoFormer.
-2. Extract burned-in Chinese subtitles from video frames with PaddleOCR.
+2. Extract burned-in Chinese subtitles from video frames with PP-OCRv6.
 3. Transcribe dialogue and identify speakers with WhisperX.
 4. Merge OCR subtitles with speaker information, then review and edit final Chinese subtitles.
 5. Generate Gemini translation prompts and manually import translation and dubbing-segment JSON.
@@ -147,7 +147,24 @@ Copy-Item data\settings.example.json data\settings.json
 
 The token file should contain only the access token itself. Do not commit tokens, `data/settings.json`, or token files.
 
-### 3. Prepare the VoxCPM runtime
+### 3. Prepare the PP-OCRv6 runtime
+
+The OCR setup script installs PaddlePaddle GPU 3.3.1 and PaddleOCR 3.7.0 into the D-drive workspace runtime, then downloads and validates the PP-OCRv6 medium models. Existing PP-OCRv5 profiles remain available as fallbacks.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_subtitle_ocr_runtime.ps1
+```
+
+For the packaged desktop runtime, pass its runtime path explicitly:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup_subtitle_ocr_runtime.ps1 `
+  -Venv D:\VideoTranslationWorkflow\runtime\subtitle-ocr-venv
+```
+
+Models and package caches are stored under `D:\models`, while temporary files use `D:\Temp\SubtitleOCRRuntime`.
+
+### 4. Prepare the VoxCPM runtime
 
 The project includes a D-drive-oriented setup script:
 
@@ -165,7 +182,7 @@ Default paths used by the script:
 
 If you already have a compatible runtime, skip the script and edit `data/settings.json` directly.
 
-### 4. Start the development app
+### 5. Start the development app
 
 ```powershell
 npm run dev
@@ -173,7 +190,7 @@ npm run dev
 
 Open `http://127.0.0.1:5173/` in a browser.
 
-### 5. Start the Electron desktop app
+### 6. Start the Electron desktop app
 
 ```powershell
 npm run desktop

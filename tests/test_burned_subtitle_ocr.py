@@ -17,6 +17,22 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(ocr_script)
 
 
+class OcrProfileTests(unittest.TestCase):
+    def test_uses_pp_ocr_v6_for_default_profiles_and_keeps_v5_fallbacks(self):
+        self.assertEqual(
+            ocr_script.OCR_PROFILES["quality"],
+            ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"),
+        )
+        self.assertEqual(
+            ocr_script.OCR_PROFILES["fast"],
+            ("PP-OCRv6_small_det", "PP-OCRv6_small_rec"),
+        )
+        self.assertEqual(
+            ocr_script.OCR_PROFILES["quality-v5"],
+            ("PP-OCRv5_server_det", "PP-OCRv5_server_rec"),
+        )
+
+
 class PostprocessCuesTests(unittest.TestCase):
     def test_merges_one_character_ocr_variants_in_short_subtitle(self):
         cues = [

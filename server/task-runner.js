@@ -11,7 +11,18 @@ export function createTaskRunner({
   terminateProcess,
   now = () => new Date().toISOString(),
 }) {
-  async function start({
+  const pendingStartsByTaskMap = new WeakMap();
+
+  function pendingStartsFor(activeTasks) {
+    let pendingStarts = pendingStartsByTaskMap.get(activeTasks);
+    if (!pendingStarts) {
+      pendingStarts = new Map();
+      pendingStartsByTaskMap.set(activeTasks, pendingStarts);
+    }
+    return pendingStarts;
+  }
+
+  async function startTask({
     videoId,
     workflow,
     logPath,
@@ -100,6 +111,29 @@ export function createTaskRunner({
     });
 
     return task;
+  }
+
+  function start(options) {
+    const { activeTasks, activeKey = options.videoId } = options;
+    const activeTask = activeTasks.get(activeKey);
+    if (activeTask?.status === "running") {
+      return Promise.resolve(activeTask);
+    }
+
+    const pendingStarts = pendingStartsFor(activeTasks);
+    const pendingStart = pendingStarts.get(activeKey);
+    if (pendingStart) {
+      return pendingStart;
+    }
+
+    let startPromise;
+    startPromise = startTask(options).finally(() => {
+      if (pendingStarts.get(activeKey) === startPromise) {
+        pendingStarts.delete(activeKey);
+      }
+    });
+    pendingStarts.set(activeKey, startPromise);
+    return startPromise;
   }
 
   return { start };

@@ -14,8 +14,10 @@ from paddleocr import PaddleOCR
 
 
 OCR_PROFILES = {
-    "quality": ("PP-OCRv5_server_det", "PP-OCRv5_server_rec"),
-    "fast": ("PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec"),
+    "quality": ("PP-OCRv6_medium_det", "PP-OCRv6_medium_rec"),
+    "fast": ("PP-OCRv6_small_det", "PP-OCRv6_small_rec"),
+    "quality-v5": ("PP-OCRv5_server_det", "PP-OCRv5_server_rec"),
+    "fast-v5": ("PP-OCRv5_mobile_det", "PP-OCRv5_mobile_rec"),
 }
 CHAR_NORMALIZATION = str.maketrans(
     {

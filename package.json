@@ -2,7 +2,7 @@
   "name": "video-translation-workflow",
   "productName": "影译工坊",
   "private": true,
-  "version": "0.2.35",
+  "version": "0.2.37",
   "description": "Local-first Windows desktop workflow for Chinese-to-English video translation, subtitle review, AI dubbing, and final MP4 rendering",
   "license": "SEE LICENSE IN LICENSE",
   "keywords": [

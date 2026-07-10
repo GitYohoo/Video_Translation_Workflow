@@ -28,17 +28,19 @@ function runnerFixture(overrides = {}) {
   const calls = [];
   const terminatedChildren = [];
   const jobStore = {
-    startJob: async (input) => {
-      calls.push(["start", input]);
-      return {
-        id: `${input.videoId}-${input.workflow}`,
-        ...input,
-        status: "running",
-        startedAt: "2026-06-10T00:00:00.000Z",
-        finishedAt: null,
-        error: null,
-      };
-    },
+    startJob:
+      overrides.startJob ||
+      (async (input) => {
+        calls.push(["start", input]);
+        return {
+          id: `${input.videoId}-${input.workflow}`,
+          ...input,
+          status: "running",
+          startedAt: "2026-06-10T00:00:00.000Z",
+          finishedAt: null,
+          error: null,
+        };
+      }),
     finishJob:
       overrides.finishJob ||
       (async (...arguments_) => calls.push(["finish", ...arguments_])),
@@ -69,6 +71,46 @@ function runnerFixture(overrides = {}) {
     terminatedChildren,
   };
 }
+
+test("coalesces concurrent starts for the same workflow task", async () => {
+  let releaseStart;
+  let startCalls = 0;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+  const fixture = runnerFixture({
+    startJob: async (input) => {
+      startCalls += 1;
+      await startGate;
+      return {
+        id: `${input.videoId}-${input.workflow}`,
+        ...input,
+        status: "running",
+        startedAt: "2026-06-10T00:00:00.000Z",
+        finishedAt: null,
+        error: null,
+      };
+    },
+  });
+  const options = {
+    videoId: "video-concurrent",
+    workflow: "bs-roformer",
+    logPath: "D:\\logs\\bs-concurrent.log",
+    activeTasks: fixture.activeTasks,
+    command: "python.exe",
+  };
+
+  const firstStart = fixture.runner.start(options);
+  const secondStart = fixture.runner.start(options);
+  assert.equal(startCalls, 1);
+
+  releaseStart();
+  const [firstTask, secondTask] = await Promise.all([firstStart, secondStart]);
+
+  assert.equal(firstTask, secondTask);
+  assert.equal(fixture.activeTasks.get("video-concurrent"), firstTask);
+  assert.equal(fixture.taskRegistry.get(firstTask.id), firstTask);
+});
 
 test("persists and cleans up a completed single-process task", async () => {
   const fixture = runnerFixture();

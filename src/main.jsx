@@ -1314,6 +1314,15 @@ function SimplifiedVideoPage({ videos, isLoading }) {
     speakers,
     finalSubtitles,
   });
+  const projectWorkflowRunning = [
+    separation,
+    ocr,
+    speakers,
+    finalSubtitles,
+    downstreamEnglishDubbing,
+    downstreamFinalVideo,
+    downstreamFinalValidation,
+  ].some((task) => task?.status === "running");
   const activeCueNumber = editorCues.find(
     (cue) => currentTimeMs >= cue.startMs && currentTimeMs < cue.endMs,
   )?.number;
@@ -1656,7 +1665,13 @@ function SimplifiedVideoPage({ videos, isLoading }) {
           {openPathError && <p className="workflow-error page-error">{openPathError}</p>}
 
           <div className="generation-actions">
-            <button className="secondary-button compact" disabled={isReplacingSource} type="button" onClick={replaceProjectSource}>
+            <button
+              className="secondary-button compact"
+              disabled={isReplacingSource || projectWorkflowRunning}
+              title={projectWorkflowRunning ? "请先等待当前任务完成或取消任务" : undefined}
+              type="button"
+              onClick={replaceProjectSource}
+            >
               {isReplacingSource ? "等待选择..." : "更换原视频"}
             </button>
             {!workflowStarted && finalSubtitles?.status !== "completed" && (
@@ -2708,6 +2723,15 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
   const sourceDisplayName = record.sourcePath
     ? artifactDisplayName({ path: record.sourcePath })
     : "未记录原视频路径，请重新添加原视频以执行工作流。";
+  const projectWorkflowRunning = [
+    separation,
+    ocr,
+    speakers,
+    finalSubtitles,
+    englishDubbing,
+    finalVideo,
+    finalValidation,
+  ].some((task) => task?.status === "running");
   const sourceUnavailable = separation?.sourceReady === false || ocr?.sourceReady === false;
   const sourceActionDisabled = record.storageMode !== "reference" || sourceUnavailable;
   const workflowOverview = buildWorkflowOverview({
@@ -2809,7 +2833,8 @@ function VideoPage({ videos, isLoading, embedded = false, visiblePanel = null })
               </span>
               <button
                 className="secondary-button compact"
-                disabled={isReplacingSource}
+                disabled={isReplacingSource || projectWorkflowRunning}
+                title={projectWorkflowRunning ? "请先等待当前任务完成或取消任务" : undefined}
                 type="button"
                 onClick={replaceProjectSource}
               >

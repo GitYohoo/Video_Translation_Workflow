@@ -110,10 +110,23 @@ test("uses one compact generation card and allows regenerating the final subtitl
   assert.doesNotMatch(generatePanelSource, /final-srt-panel/);
 });
 
-test("describes the simplified two-step workflow on the welcome page", () => {
+test("describes how to start and continue projects on the welcome page", () => {
   assert.match(source, /选择视频后点击开始，系统将自动提取、识别并合并最终中文字幕/);
-  assert.match(source, /<strong>点击开始生成<\/strong>/);
-  assert.match(source, /<strong>播放与校对<\/strong>/);
+  assert.match(source, /<h1>从原视频开始制作<\/h1>/);
+  assert.match(source, /\{isAddingVideo \? "正在添加\.\.\." : "选择原视频"\}/);
+  assert.match(source, /<h2 id="recent-projects-title">继续制作<\/h2>/);
+});
+
+test("disables source replacement while a project workflow is running", () => {
+  assert.match(
+    simplifiedPageSource,
+    /disabled=\{isReplacingSource \|\| projectWorkflowRunning\}/,
+  );
+  assert.match(
+    productionPageSource,
+    /disabled=\{isReplacingSource \|\| projectWorkflowRunning\}/,
+  );
+  assert.match(source, /请先等待当前任务完成或取消任务/);
 });
 
 test("styles the video and subtitle editor as a responsive workbench", () => {

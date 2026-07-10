@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createWriteStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,9 @@ import {
 } from "./final-video-style-store.js";
 import { createJobController } from "./job-controller.js";
 import { createJobStore, jobIdFor } from "./job-store.js";
+import { sendMediaFile } from "./media-stream.js";
 import { terminateChildProcess } from "./process-control.js";
+import { createProjectOperationCoordinator } from "./project-operation-coordinator.js";
 import {
   createProjectPathResolver,
 } from "./project-paths.js";
@@ -187,6 +189,20 @@ const FINAL_SUBTITLES_WORKFLOW = "final-subtitles";
 const ENGLISH_DUBBING_WORKFLOW = "english-dubbing-mix";
 const FINAL_VIDEO_WORKFLOW = "final-video";
 const FINAL_VALIDATION_WORKFLOW = "final-validation";
+const projectTaskMaps = [
+  activeBsRoformerTasks,
+  activeOcrTasks,
+  activeWhisperxTasks,
+  activeFinalSubtitlesTasks,
+  activeEnglishDubbingTasks,
+  activeFinalVideoTasks,
+  activeFinalValidationTasks,
+];
+const projectOperations = createProjectOperationCoordinator({
+  isProjectActive: (videoId) =>
+    activeThumbnailTasks.has(videoId) ||
+    projectTaskMaps.some((tasks) => tasks.get(videoId)?.status === "running"),
+});
 const finalVideoStyles = new Map();
 const catalogStore = createCatalogStore(catalogPath);
 const { loadCatalog, writeCatalog, findVideoById, sortedVideos } = catalogStore;
@@ -2484,15 +2500,22 @@ app.post("/api/videos/:id/source/select", async (request, response, next) => {
       response.sendStatus(404);
       return;
     }
-    const sourcePath = await selectVideoPath();
-    if (!sourcePath) {
+    const updated = await projectOperations.mutate(video.id, async () => {
+      const sourcePath = await selectVideoPath();
+      if (!sourcePath) {
+        return null;
+      }
+      const incoming = await buildReferenceRecord(sourcePath);
+      applySelectedSourceToRecord(video, incoming);
+      await fs.rm(thumbnailPath(video), { force: true });
+      await writeCatalog(videos);
+      return publicVideo(video);
+    });
+    if (!updated) {
       response.status(204).end();
       return;
     }
-    const incoming = await buildReferenceRecord(sourcePath);
-    applySelectedSourceToRecord(video, incoming);
-    await writeCatalog(videos);
-    response.json(publicVideo(video));
+    response.json(updated);
   } catch (error) {
     next(error);
   }
@@ -2506,11 +2529,13 @@ app.delete("/api/videos/:id", async (request, response, next) => {
       response.sendStatus(404);
       return;
     }
-    if (!video.sourcePath && video.fileName) {
-      await fs.rm(path.join(uploadDirectory, video.fileName), { force: true });
-    }
-    await fs.rm(thumbnailPath(video), { force: true });
-    await writeCatalog(videos.filter((item) => item.id !== video.id));
+    await projectOperations.mutate(video.id, async () => {
+      if (!video.sourcePath && video.fileName) {
+        await fs.rm(path.join(uploadDirectory, video.fileName), { force: true });
+      }
+      await fs.rm(thumbnailPath(video), { force: true });
+      await writeCatalog(videos.filter((item) => item.id !== video.id));
+    });
     response.sendStatus(204);
   } catch (error) {
     next(error);
@@ -2539,7 +2564,9 @@ app.post("/api/videos/:id/workflow/bs-roformer/run", async (request, response, n
       response.sendStatus(404);
       return;
     }
-    response.status(202).json(await startBsRoformer(video));
+    response.status(202).json(
+      await projectOperations.start(video.id, "bs-roformer", () => startBsRoformer(video)),
+    );
   } catch (error) {
     next(error);
   }
@@ -2567,7 +2594,9 @@ app.post("/api/videos/:id/workflow/ocr-subtitles/run", async (request, response,
       response.sendStatus(404);
       return;
     }
-    response.status(202).json(await startOcr(video));
+    response.status(202).json(
+      await projectOperations.start(video.id, OCR_SUBTITLES_WORKFLOW, () => startOcr(video)),
+    );
   } catch (error) {
     next(error);
   }
@@ -2595,7 +2624,9 @@ app.post("/api/videos/:id/workflow/whisperx-speakers/run", async (request, respo
       response.sendStatus(404);
       return;
     }
-    response.status(202).json(await startWhisperx(video));
+    response.status(202).json(
+      await projectOperations.start(video.id, WHISPERX_SPEAKERS_WORKFLOW, () => startWhisperx(video)),
+    );
   } catch (error) {
     next(error);
   }
@@ -2623,7 +2654,9 @@ app.post("/api/videos/:id/workflow/final-subtitles/run", async (request, respons
       response.sendStatus(404);
       return;
     }
-    response.status(202).json(await startFinalSubtitles(video));
+    response.status(202).json(
+      await projectOperations.start(video.id, FINAL_SUBTITLES_WORKFLOW, () => startFinalSubtitles(video)),
+    );
   } catch (error) {
     next(error);
   }
@@ -2781,7 +2814,9 @@ app.post("/api/videos/:id/workflow/english-dubbing-mix/run", async (request, res
       response.sendStatus(404);
       return;
     }
-    response.status(202).json(await startEnglishDubbing(video));
+    response.status(202).json(
+      await projectOperations.start(video.id, ENGLISH_DUBBING_WORKFLOW, () => startEnglishDubbing(video)),
+    );
   } catch (error) {
     next(error);
   }
@@ -2843,11 +2878,12 @@ app.put("/api/videos/:id/workflow/english-dubbing-mix/segments/:segmentNumber/re
       return;
     }
     response.status(202).json(
-      await startDubbingSegmentRegeneration(
-        video,
-        request.params.segmentNumber,
-        request.body,
-      ),
+      await projectOperations.start(video.id, ENGLISH_DUBBING_WORKFLOW, () =>
+        startDubbingSegmentRegeneration(
+          video,
+          request.params.segmentNumber,
+          request.body,
+        )),
     );
   } catch (error) {
     next(error);
@@ -2898,7 +2934,10 @@ app.post("/api/videos/:id/workflow/final-video/preview", async (request, respons
       response.sendStatus(404);
       return;
     }
-    response.json(await generateFinalVideoPreview(video, request.body?.style));
+    response.json(
+      await projectOperations.start(video.id, "final-video-preview", () =>
+        generateFinalVideoPreview(video, request.body?.style)),
+    );
   } catch (error) {
     next(error);
   }
@@ -2912,7 +2951,10 @@ app.post("/api/videos/:id/workflow/final-video/run", async (request, response, n
       response.sendStatus(404);
       return;
     }
-    response.status(202).json(await startFinalVideo(video, request.body?.style));
+    response.status(202).json(
+      await projectOperations.start(video.id, FINAL_VIDEO_WORKFLOW, () =>
+        startFinalVideo(video, request.body?.style)),
+    );
   } catch (error) {
     next(error);
   }
@@ -2963,7 +3005,10 @@ app.post("/api/videos/:id/workflow/final-validation/run", async (request, respon
       response.sendStatus(404);
       return;
     }
-    response.status(202).json(await startFinalValidation(video, request.body));
+    response.status(202).json(
+      await projectOperations.start(video.id, FINAL_VALIDATION_WORKFLOW, () =>
+        startFinalValidation(video, request.body)),
+    );
   } catch (error) {
     next(error);
   }
@@ -2982,29 +3027,10 @@ app.get("/api/videos/:id/workflow/final-video/content", async (request, response
       response.sendStatus(404);
       return;
     }
-    const stats = await fs.stat(filePath);
-    const range = request.headers.range;
-    response.setHeader("Content-Type", "video/mp4");
-    response.setHeader("Accept-Ranges", "bytes");
-    response.setHeader("Cache-Control", "no-store");
-
-    if (!range) {
-      response.setHeader("Content-Length", stats.size);
-      createReadStream(filePath).pipe(response);
-      return;
-    }
-
-    const [rawStart, rawEnd] = range.replace("bytes=", "").split("-");
-    const start = Number(rawStart);
-    const end = rawEnd ? Number(rawEnd) : stats.size - 1;
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || end >= stats.size) {
-      response.status(416).setHeader("Content-Range", `bytes */${stats.size}`).end();
-      return;
-    }
-    response.status(206);
-    response.setHeader("Content-Range", `bytes ${start}-${end}/${stats.size}`);
-    response.setHeader("Content-Length", end - start + 1);
-    createReadStream(filePath, { start, end }).pipe(response);
+    await sendMediaFile(request, response, filePath, {
+      contentType: "video/mp4",
+      cacheControl: "no-store",
+    });
   } catch (error) {
     next(error);
   }
@@ -3029,27 +3055,10 @@ app.get("/api/videos/:id/workflow/final-validation/content", async (request, res
       response.sendStatus(404);
       return;
     }
-    const stats = await fs.stat(filePath);
-    const range = request.headers.range;
-    response.setHeader("Content-Type", "video/mp4");
-    response.setHeader("Accept-Ranges", "bytes");
-    response.setHeader("Cache-Control", "no-store");
-    if (!range) {
-      response.setHeader("Content-Length", stats.size);
-      createReadStream(filePath).pipe(response);
-      return;
-    }
-    const [rawStart, rawEnd] = range.replace("bytes=", "").split("-");
-    const start = Number(rawStart);
-    const end = rawEnd ? Number(rawEnd) : stats.size - 1;
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || end >= stats.size) {
-      response.status(416).setHeader("Content-Range", `bytes */${stats.size}`).end();
-      return;
-    }
-    response.status(206);
-    response.setHeader("Content-Range", `bytes ${start}-${end}/${stats.size}`);
-    response.setHeader("Content-Length", end - start + 1);
-    createReadStream(filePath, { start, end }).pipe(response);
+    await sendMediaFile(request, response, filePath, {
+      contentType: "video/mp4",
+      cacheControl: "no-store",
+    });
   } catch (error) {
     next(error);
   }
@@ -3080,28 +3089,9 @@ app.get("/api/videos/:id/content", async (request, response, next) => {
       return;
     }
     const filePath = sourceFilePath(video);
-    const stats = await fs.stat(filePath);
-    const range = request.headers.range;
-    response.setHeader("Content-Type", video.type);
-    response.setHeader("Accept-Ranges", "bytes");
-
-    if (!range) {
-      response.setHeader("Content-Length", stats.size);
-      createReadStream(filePath).pipe(response);
-      return;
-    }
-
-    const [rawStart, rawEnd] = range.replace("bytes=", "").split("-");
-    const start = Number(rawStart);
-    const end = rawEnd ? Number(rawEnd) : stats.size - 1;
-    if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || end >= stats.size) {
-      response.status(416).setHeader("Content-Range", `bytes */${stats.size}`).end();
-      return;
-    }
-    response.status(206);
-    response.setHeader("Content-Range", `bytes ${start}-${end}/${stats.size}`);
-    response.setHeader("Content-Length", end - start + 1);
-    createReadStream(filePath, { start, end }).pipe(response);
+    await sendMediaFile(request, response, filePath, {
+      contentType: video.type,
+    });
   } catch (error) {
     next(error);
   }
@@ -3131,7 +3121,9 @@ app.get("/{*route}", async (request, response, next) => {
 
 app.use((error, _request, response, _next) => {
   console.error(error);
-  response.status(400).json({ error: error.message || "请求处理失败。" });
+  response
+    .status(error.code === "PROJECT_BUSY" ? 409 : 400)
+    .json({ error: error.message || "请求处理失败。" });
 });
 
 export async function startServer({

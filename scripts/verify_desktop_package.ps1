@@ -12,6 +12,7 @@ $requiredFiles = @(
   (Join-Path $unpackedDirectory "build\icon.png"),
   (Join-Path $unpackedDirectory "scripts\bs_roformer_refinement.py"),
   (Join-Path $unpackedDirectory "scripts\burned_subtitle_ocr.py"),
+  (Join-Path $unpackedDirectory "scripts\setup_subtitle_ocr_runtime.ps1"),
   (Join-Path $unpackedDirectory "scripts\restore_ocr_punctuation.py"),
   (Join-Path $unpackedDirectory "scripts\whisperx_speaker_subtitles.py"),
   (Join-Path $unpackedDirectory "scripts\voxcpm_dubbing_workflow.py")
