@@ -198,6 +198,15 @@ const projectTaskMaps = [
   activeFinalVideoTasks,
   activeFinalValidationTasks,
 ];
+const activeTasksByWorkflow = {
+  "bs-roformer": activeBsRoformerTasks,
+  [OCR_SUBTITLES_WORKFLOW]: activeOcrTasks,
+  [WHISPERX_SPEAKERS_WORKFLOW]: activeWhisperxTasks,
+  [FINAL_SUBTITLES_WORKFLOW]: activeFinalSubtitlesTasks,
+  [ENGLISH_DUBBING_WORKFLOW]: activeEnglishDubbingTasks,
+  [FINAL_VIDEO_WORKFLOW]: activeFinalVideoTasks,
+  [FINAL_VALIDATION_WORKFLOW]: activeFinalValidationTasks,
+};
 const projectOperations = createProjectOperationCoordinator({
   isProjectActive: (videoId) =>
     activeThumbnailTasks.has(videoId) ||
@@ -516,6 +525,15 @@ function parseSubtitleMilliseconds(value) {
     Number(seconds) * 1000 +
     Number(milliseconds)
   );
+}
+
+async function fileRevision(filePath) {
+  try {
+    const stats = await fs.stat(filePath);
+    return `${stats.size}:${stats.mtimeMs}`;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeEditableSubtitleTime(value, label) {
@@ -1418,7 +1436,11 @@ async function finalSubtitlesStatus(record) {
     outputDirectory: paths.outputDirectory,
     outputDirectoryReady: await isDirectory(paths.outputDirectory),
     outputs: {
-      srt: { path: paths.srtPath, ready: srtReady },
+      srt: {
+        path: paths.srtPath,
+        ready: srtReady,
+        revision: srtReady ? await fileRevision(paths.srtPath) : null,
+      },
     },
     translationTarget: {
       ...paths.translationTarget,
@@ -2406,455 +2428,201 @@ async function addReferencePaths(paths) {
 
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+const videoRouter = express.Router();
 
-async function requestVideo(request, response) {
-  const video = await findVideoById(request.params.id);
+videoRouter.param("id", async (_request, response, next, id) => {
+  const videos = await loadCatalog();
+  const video = videos.find((item) => item.id === id);
   if (!video) {
     response.sendStatus(404);
-    return null;
+    return;
   }
-  return video;
-}
-
-app.get("/api/videos", async (_request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    response.json(sortedVideos(videos).map(publicVideo));
-  } catch (error) {
-    next(error);
-  }
+  response.locals.videos = videos;
+  response.locals.video = video;
+  next();
 });
 
-app.get("/api/videos/:id", async (request, response, next) => {
-  try {
-    const video = await requestVideo(request, response);
-    if (!video) {
-      return;
-    }
-    response.json(publicVideo(video));
-  } catch (error) {
-    next(error);
-  }
+videoRouter.get("/", async (_request, response) => {
+  const videos = await loadCatalog();
+  response.json(sortedVideos(videos).map(publicVideo));
+});
+
+videoRouter.get("/:id", (_request, response) => {
+  response.json(publicVideo(response.locals.video));
 });
 
 app.use(createJobRouter({ findVideoById, jobController }));
 
-app.post("/api/videos/:id/open-path", async (request, response, next) => {
-  try {
-    const video = await requestVideo(request, response);
-    if (!video) {
-      return;
-    }
-    await openProjectPath(video, request.body?.path);
-    response.sendStatus(204);
-  } catch (error) {
-    next(error);
-  }
+videoRouter.post("/:id/open-path", async (request, response) => {
+  await openProjectPath(response.locals.video, request.body?.path);
+  response.sendStatus(204);
 });
 
-app.post("/api/videos/:id/open-artifact", async (request, response, next) => {
-  try {
-    const video = await requestVideo(request, response);
-    if (!video) {
-      return;
-    }
-    await openProjectArtifact(video, request.body?.artifactKey);
-    response.sendStatus(204);
-  } catch (error) {
-    next(error);
-  }
+videoRouter.post("/:id/open-artifact", async (request, response) => {
+  await openProjectArtifact(response.locals.video, request.body?.artifactKey);
+  response.sendStatus(204);
 });
 
-app.post("/api/videos/register", async (request, response, next) => {
-  try {
-    if (!request.body?.sourcePath || typeof request.body.sourcePath !== "string") {
-      response.status(400).json({ error: "缺少原视频路径。" });
-      return;
-    }
-    const [record] = await addReferencePaths([request.body.sourcePath]);
-    response.status(201).json(record);
-  } catch (error) {
-    next(error);
+videoRouter.post("/register", async (request, response) => {
+  if (!request.body?.sourcePath || typeof request.body.sourcePath !== "string") {
+    response.status(400).json({ error: "缺少原视频路径。" });
+    return;
   }
+  const [record] = await addReferencePaths([request.body.sourcePath]);
+  response.status(201).json(record);
 });
 
-app.post("/api/videos/select-source", async (_request, response, next) => {
-  try {
+videoRouter.post("/select-source", async (_request, response) => {
+  const sourcePath = await selectVideoPath();
+  if (!sourcePath) {
+    response.status(204).end();
+    return;
+  }
+  const [record] = await addReferencePaths([sourcePath]);
+  response.status(201).json(record);
+});
+
+videoRouter.post("/:id/source/select", async (_request, response) => {
+  const { video, videos } = response.locals;
+  const updated = await projectOperations.mutate(video.id, async () => {
     const sourcePath = await selectVideoPath();
     if (!sourcePath) {
-      response.status(204).end();
-      return;
+      return null;
     }
-    const [record] = await addReferencePaths([sourcePath]);
-    response.status(201).json(record);
-  } catch (error) {
-    next(error);
+    const incoming = await buildReferenceRecord(sourcePath);
+    applySelectedSourceToRecord(video, incoming);
+    await fs.rm(thumbnailPath(video), { force: true });
+    await writeCatalog(videos);
+    return publicVideo(video);
+  });
+  if (!updated) {
+    response.status(204).end();
+    return;
   }
+  response.json(updated);
 });
 
-app.post("/api/videos/:id/source/select", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
+videoRouter.delete("/:id", async (_request, response) => {
+  const { video, videos } = response.locals;
+  await projectOperations.mutate(video.id, async () => {
+    if (!video.sourcePath && video.fileName) {
+      await fs.rm(path.join(uploadDirectory, video.fileName), { force: true });
     }
-    const updated = await projectOperations.mutate(video.id, async () => {
-      const sourcePath = await selectVideoPath();
-      if (!sourcePath) {
-        return null;
-      }
-      const incoming = await buildReferenceRecord(sourcePath);
-      applySelectedSourceToRecord(video, incoming);
-      await fs.rm(thumbnailPath(video), { force: true });
-      await writeCatalog(videos);
-      return publicVideo(video);
-    });
-    if (!updated) {
-      response.status(204).end();
-      return;
-    }
-    response.json(updated);
-  } catch (error) {
-    next(error);
-  }
+    await fs.rm(thumbnailPath(video), { force: true });
+    await writeCatalog(videos.filter((item) => item.id !== video.id));
+  });
+  response.sendStatus(204);
 });
 
-app.delete("/api/videos/:id", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    await projectOperations.mutate(video.id, async () => {
-      if (!video.sourcePath && video.fileName) {
-        await fs.rm(path.join(uploadDirectory, video.fileName), { force: true });
-      }
-      await fs.rm(thumbnailPath(video), { force: true });
-      await writeCatalog(videos.filter((item) => item.id !== video.id));
-    });
-    response.sendStatus(204);
-  } catch (error) {
-    next(error);
+function registerWorkflowRoutes(workflow, getStatus, start) {
+  const route = `/:id/workflow/${workflow}`;
+  videoRouter.get(route, async (_request, response) => {
+    response.json(await getStatus(response.locals.video));
+  });
+  videoRouter.post(`${route}/run`, async (request, response) => {
+    const { video } = response.locals;
+    const task = await projectOperations.start(video.id, workflow, () => start(video, request));
+    response.status(202).json(task);
+  });
+}
+
+registerWorkflowRoutes("bs-roformer", bsRoformerStatus, startBsRoformer);
+registerWorkflowRoutes(OCR_SUBTITLES_WORKFLOW, ocrStatus, startOcr);
+registerWorkflowRoutes(WHISPERX_SPEAKERS_WORKFLOW, whisperxStatus, startWhisperx);
+registerWorkflowRoutes(FINAL_SUBTITLES_WORKFLOW, finalSubtitlesStatus, startFinalSubtitles);
+
+videoRouter.get("/:id/workflow/chinese-subtitle-editor", async (_request, response) => {
+  const { video } = response.locals;
+  const paths = finalSubtitlesOutputPaths(video);
+  if (!paths || !(await isFile(paths.srtPath))) {
+    response.status(409).json({ error: "请先生成最终中文字幕。" });
+    return;
   }
+  response.json(await readChineseSubtitleFile(paths.srtPath));
 });
 
-app.get("/api/videos/:id/workflow/bs-roformer", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await bsRoformerStatus(video));
-  } catch (error) {
-    next(error);
+videoRouter.delete("/:id/workflow/stages/:stageId", async (request, response) => {
+  const { video } = response.locals;
+  const affectedWorkflows = affectedWorkflowsForStage(request.params.stageId);
+  const hasRunningTask = affectedWorkflows.some(
+    (workflow) => activeTasksByWorkflow[workflow]?.get(video.id)?.status === "running",
+  );
+  if (hasRunningTask) {
+    response.status(409).json({ error: "该步骤或后续步骤仍在运行，请先等待完成或取消任务。" });
+    return;
   }
-});
-
-app.post("/api/videos/:id/workflow/bs-roformer/run", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.status(202).json(
-      await projectOperations.start(video.id, "bs-roformer", () => startBsRoformer(video)),
-    );
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/workflow/ocr-subtitles", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await ocrStatus(video));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/videos/:id/workflow/ocr-subtitles/run", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.status(202).json(
-      await projectOperations.start(video.id, OCR_SUBTITLES_WORKFLOW, () => startOcr(video)),
-    );
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/workflow/whisperx-speakers", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await whisperxStatus(video));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/videos/:id/workflow/whisperx-speakers/run", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.status(202).json(
-      await projectOperations.start(video.id, WHISPERX_SPEAKERS_WORKFLOW, () => startWhisperx(video)),
-    );
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/workflow/final-subtitles", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await finalSubtitlesStatus(video));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/videos/:id/workflow/final-subtitles/run", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.status(202).json(
-      await projectOperations.start(video.id, FINAL_SUBTITLES_WORKFLOW, () => startFinalSubtitles(video)),
-    );
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/workflow/chinese-subtitle-editor", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    const paths = finalSubtitlesOutputPaths(video);
-    if (!paths || !(await isFile(paths.srtPath))) {
-      response.status(409).json({ error: "请先生成最终中文字幕。" });
-      return;
-    }
-    response.json(await readChineseSubtitleFile(paths.srtPath));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.delete("/api/videos/:id/workflow/stages/:stageId", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    const activeTasksByWorkflow = {
-      "bs-roformer": activeBsRoformerTasks,
-      [OCR_SUBTITLES_WORKFLOW]: activeOcrTasks,
-      [WHISPERX_SPEAKERS_WORKFLOW]: activeWhisperxTasks,
-      [FINAL_SUBTITLES_WORKFLOW]: activeFinalSubtitlesTasks,
-      [ENGLISH_DUBBING_WORKFLOW]: activeEnglishDubbingTasks,
-      [FINAL_VIDEO_WORKFLOW]: activeFinalVideoTasks,
-      [FINAL_VALIDATION_WORKFLOW]: activeFinalValidationTasks,
-    };
-    const affectedWorkflows = affectedWorkflowsForStage(request.params.stageId);
-    const hasRunningTask = affectedWorkflows.some(
-      (workflow) => activeTasksByWorkflow[workflow]?.get(video.id)?.status === "running",
-    );
-    if (hasRunningTask) {
-      response.status(409).json({ error: "该步骤或后续步骤仍在运行，请先等待完成或取消任务。" });
-      return;
-    }
-    const result = await cleanupStageArtifacts({
-      stageId: request.params.stageId,
-      videoId: video.id,
-      logDirectory,
-      jobDirectory,
-      paths: {
-        separation: bsRoformerOutputPaths(video),
-        ocr: ocrOutputPaths(video),
+  const result = await cleanupStageArtifacts({
+    stageId: request.params.stageId,
+    videoId: video.id,
+    logDirectory,
+    jobDirectory,
+    paths: {
+      separation: bsRoformerOutputPaths(video),
+      ocr: ocrOutputPaths(video),
       finalSubtitles: finalSubtitlesOutputPaths(video),
       dubbing: englishDubbingOutputPaths(video),
       finalVideo: finalVideoOutputPaths(video),
       finalValidation: finalValidationOutputPaths(video),
-      },
-    });
-    finalVideoStyles.delete(video.id);
-    response.json(result);
-  } catch (error) {
-    next(error);
-  }
+    },
+  });
+  finalVideoStyles.delete(video.id);
+  response.json(result);
 });
 
-app.put("/api/videos/:id/workflow/chinese-subtitle-editor", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    if (activeEnglishDubbingTasks.get(video.id)?.status === "running") {
-      response.status(409).json({ error: "英文配音正在运行，完成后再保存中文字幕修改。" });
-      return;
-    }
-    const paths = finalSubtitlesOutputPaths(video);
-    if (!paths || !(await isFile(paths.srtPath))) {
-      response.status(409).json({ error: "请先生成最终中文字幕。" });
-      return;
-    }
-    response.json(await saveChineseSubtitleFile(paths.srtPath, request.body?.cues));
-  } catch (error) {
-    next(error);
+videoRouter.put("/:id/workflow/chinese-subtitle-editor", async (request, response) => {
+  const { video } = response.locals;
+  if (activeEnglishDubbingTasks.get(video.id)?.status === "running") {
+    response.status(409).json({ error: "英文配音正在运行，完成后再保存中文字幕修改。" });
+    return;
   }
+  const paths = finalSubtitlesOutputPaths(video);
+  if (!paths || !(await isFile(paths.srtPath))) {
+    response.status(409).json({ error: "请先生成最终中文字幕。" });
+    return;
+  }
+  response.json({
+    ...await saveChineseSubtitleFile(paths.srtPath, request.body?.cues),
+    revision: await fileRevision(paths.srtPath),
+  });
 });
 
-app.get("/api/videos/:id/workflow/subtitle-editor", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await subtitleEditorState(video));
-  } catch (error) {
-    next(error);
-  }
+videoRouter.get("/:id/workflow/subtitle-editor", async (_request, response) => {
+  response.json(await subtitleEditorState(response.locals.video));
 });
 
-app.put("/api/videos/:id/workflow/subtitle-editor", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await saveSubtitleEditor(video, request.body?.cues));
-  } catch (error) {
-    next(error);
-  }
+videoRouter.put("/:id/workflow/subtitle-editor", async (request, response) => {
+  response.json(await saveSubtitleEditor(response.locals.video, request.body?.cues));
 });
 
-app.post("/api/videos/:id/workflow/subtitle-editor/import-srt", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await importTranslatedSubtitleFile(video));
-  } catch (error) {
-    next(error);
-  }
+videoRouter.post("/:id/workflow/subtitle-editor/import-srt", async (_request, response) => {
+  response.json(await importTranslatedSubtitleFile(response.locals.video));
 });
 
-app.get("/api/videos/:id/workflow/english-dubbing-mix", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await englishDubbingStatus(video));
-  } catch (error) {
-    next(error);
-  }
-});
+registerWorkflowRoutes(ENGLISH_DUBBING_WORKFLOW, englishDubbingStatus, startEnglishDubbing);
 
-app.post("/api/videos/:id/workflow/english-dubbing-mix/run", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
+videoRouter.get("/:id/workflow/english-dubbing-mix/segments/:segmentNumber/audio",
+  async (request, response) => {
+    try {
+      const paths = englishDubbingOutputPaths(response.locals.video);
+      const filePath = await findDubbingSegmentAudioPath(
+        paths,
+        request.params.segmentNumber,
+        request.query.kind || "fitted",
+        { isFile },
+      );
+      streamAudioFile(filePath, response);
+    } catch (error) {
+      if (/找不到|尚未生成|未知配音音频类型/.test(error.message)) {
+        response.status(404).json({ error: error.message });
+        return;
+      }
+      throw error;
     }
-    response.status(202).json(
-      await projectOperations.start(video.id, ENGLISH_DUBBING_WORKFLOW, () => startEnglishDubbing(video)),
-    );
-  } catch (error) {
-    next(error);
-  }
-});
+  },
+);
 
-app.get("/api/videos/:id/workflow/english-dubbing-mix/segments/:segmentNumber/audio", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    const paths = englishDubbingOutputPaths(video);
-    const filePath = await findDubbingSegmentAudioPath(
-      paths,
-      request.params.segmentNumber,
-      request.query.kind || "fitted",
-      { isFile },
-    );
-    streamAudioFile(filePath, response);
-  } catch (error) {
-    if (/找不到|尚未生成|未知配音音频类型/.test(error.message)) {
-      response.status(404).json({ error: error.message });
-      return;
-    }
-    next(error);
-  }
-});
-
-app.post("/api/videos/:id/workflow/english-dubbing-mix/reference-audio/select", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
+videoRouter.post("/:id/workflow/english-dubbing-mix/reference-audio/select",
+  async (_request, response) => {
     const selectedPath = await selectAudioPath();
     if (!selectedPath) {
       response.status(204).end();
@@ -2864,238 +2632,114 @@ app.post("/api/videos/:id/workflow/english-dubbing-mix/reference-audio/select", 
       path: selectedPath,
       name: path.basename(selectedPath),
     });
-  } catch (error) {
-    next(error);
+  },
+);
+
+videoRouter.put("/:id/workflow/english-dubbing-mix/segments/:segmentNumber/regenerate",
+  async (request, response) => {
+    const { video } = response.locals;
+    const task = await projectOperations.start(video.id, ENGLISH_DUBBING_WORKFLOW, () =>
+      startDubbingSegmentRegeneration(
+        video,
+        request.params.segmentNumber,
+        request.body,
+      ));
+    response.status(202).json(task);
+  },
+);
+
+registerWorkflowRoutes(
+  FINAL_VIDEO_WORKFLOW,
+  finalVideoStatus,
+  (video, request) => startFinalVideo(video, request.body?.style),
+);
+
+videoRouter.put("/:id/workflow/final-video/style", async (request, response) => {
+  const { video } = response.locals;
+  const paths = finalVideoOutputPaths(video);
+  if (!paths) {
+    response.status(409).json({ error: "该项目没有原视频路径，无法保存字幕样式。" });
+    return;
   }
+  const style = finalVideoStyle(request.body?.style || request.body || {});
+  finalVideoStyles.set(video.id, style);
+  await saveFinalVideoStyle(paths.styleConfigPath, style);
+  response.json({ style });
 });
 
-app.put("/api/videos/:id/workflow/english-dubbing-mix/segments/:segmentNumber/regenerate", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.status(202).json(
-      await projectOperations.start(video.id, ENGLISH_DUBBING_WORKFLOW, () =>
-        startDubbingSegmentRegeneration(
-          video,
-          request.params.segmentNumber,
-          request.body,
-        )),
-    );
-  } catch (error) {
-    next(error);
-  }
+videoRouter.post("/:id/workflow/final-video/preview", async (request, response) => {
+  const { video } = response.locals;
+  const task = await projectOperations.start(video.id, "final-video-preview", () =>
+    generateFinalVideoPreview(video, request.body?.style));
+  response.json(task);
 });
 
-app.get("/api/videos/:id/workflow/final-video", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await finalVideoStatus(video));
-  } catch (error) {
-    next(error);
+videoRouter.get("/:id/workflow/final-video/previews/:frameNumber", async (request, response) => {
+  const { video } = response.locals;
+  const paths = finalVideoOutputPaths(video);
+  const frameNumber = Number(request.params.frameNumber);
+  const previewPath = paths?.previewPaths[frameNumber - 1];
+  if (!previewPath || !(await isFile(previewPath))) {
+    response.sendStatus(404);
+    return;
   }
+  response.sendFile(previewPath, {
+    headers: { "Cache-Control": "no-store" },
+  });
 });
 
-app.put("/api/videos/:id/workflow/final-video/style", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    const paths = finalVideoOutputPaths(video);
-    if (!paths) {
-      response.status(409).json({ error: "该项目没有原视频路径，无法保存字幕样式。" });
-      return;
-    }
-    const style = finalVideoStyle(request.body?.style || request.body || {});
-    finalVideoStyles.set(video.id, style);
-    await saveFinalVideoStyle(paths.styleConfigPath, style);
-    response.json({ style });
-  } catch (error) {
-    next(error);
+registerWorkflowRoutes(
+  FINAL_VALIDATION_WORKFLOW,
+  finalValidationStatus,
+  (video, request) => startFinalValidation(video, request.body),
+);
+
+videoRouter.get("/:id/workflow/final-video/content", async (request, response) => {
+  const { video } = response.locals;
+  const filePath = finalVideoOutputPaths(video)?.videoPath;
+  if (!filePath || !(await isFile(filePath))) {
+    response.sendStatus(404);
+    return;
   }
+  await sendMediaFile(request, response, filePath, {
+    contentType: "video/mp4",
+    cacheControl: "no-store",
+  });
 });
 
-app.post("/api/videos/:id/workflow/final-video/preview", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(
-      await projectOperations.start(video.id, "final-video-preview", () =>
-        generateFinalVideoPreview(video, request.body?.style)),
-    );
-  } catch (error) {
-    next(error);
+videoRouter.get("/:id/workflow/final-validation/content", async (request, response) => {
+  const { video } = response.locals;
+  const paths = finalValidationOutputPaths(video);
+  const validationStatus = await finalValidationStatus(video);
+  const verifiedReady =
+    validationStatus.status === "completed" &&
+    paths?.videoPath &&
+    await isFile(paths.videoPath);
+  const filePath = verifiedReady ? paths.videoPath : paths?.inputs.finalVideo;
+  if (!filePath || !(await isFile(filePath))) {
+    response.sendStatus(404);
+    return;
   }
+  await sendMediaFile(request, response, filePath, {
+    contentType: "video/mp4",
+    cacheControl: "no-store",
+  });
 });
 
-app.post("/api/videos/:id/workflow/final-video/run", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.status(202).json(
-      await projectOperations.start(video.id, FINAL_VIDEO_WORKFLOW, () =>
-        startFinalVideo(video, request.body?.style)),
-    );
-  } catch (error) {
-    next(error);
-  }
+videoRouter.get("/:id/thumbnail", async (_request, response) => {
+  response.sendFile(await ensureThumbnail(response.locals.video), {
+    headers: { "Cache-Control": "public, max-age=86400" },
+  });
 });
 
-app.get("/api/videos/:id/workflow/final-video/previews/:frameNumber", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    const paths = finalVideoOutputPaths(video);
-    const frameNumber = Number(request.params.frameNumber);
-    const previewPath = paths?.previewPaths[frameNumber - 1];
-    if (!previewPath || !(await isFile(previewPath))) {
-      response.sendStatus(404);
-      return;
-    }
-    response.sendFile(previewPath, {
-      headers: { "Cache-Control": "no-store" },
-    });
-  } catch (error) {
-    next(error);
-  }
+videoRouter.get("/:id/content", async (request, response) => {
+  const { video } = response.locals;
+  await sendMediaFile(request, response, sourceFilePath(video), {
+    contentType: video.type,
+  });
 });
 
-app.get("/api/videos/:id/workflow/final-validation", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.json(await finalValidationStatus(video));
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/videos/:id/workflow/final-validation/run", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.status(202).json(
-      await projectOperations.start(video.id, FINAL_VALIDATION_WORKFLOW, () =>
-        startFinalValidation(video, request.body)),
-    );
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/workflow/final-video/content", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    const filePath = finalVideoOutputPaths(video)?.videoPath;
-    if (!filePath || !(await isFile(filePath))) {
-      response.sendStatus(404);
-      return;
-    }
-    await sendMediaFile(request, response, filePath, {
-      contentType: "video/mp4",
-      cacheControl: "no-store",
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/workflow/final-validation/content", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    const paths = finalValidationOutputPaths(video);
-    const validationStatus = await finalValidationStatus(video);
-    const verifiedReady =
-      validationStatus.status === "completed" &&
-      paths?.videoPath &&
-      await isFile(paths.videoPath);
-    const filePath = verifiedReady ? paths.videoPath : paths?.inputs.finalVideo;
-    if (!filePath || !(await isFile(filePath))) {
-      response.sendStatus(404);
-      return;
-    }
-    await sendMediaFile(request, response, filePath, {
-      contentType: "video/mp4",
-      cacheControl: "no-store",
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/thumbnail", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    response.sendFile(await ensureThumbnail(video), {
-      headers: { "Cache-Control": "public, max-age=86400" },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/videos/:id/content", async (request, response, next) => {
-  try {
-    const videos = await loadCatalog();
-    const video = videos.find((item) => item.id === request.params.id);
-    if (!video) {
-      response.sendStatus(404);
-      return;
-    }
-    const filePath = sourceFilePath(video);
-    await sendMediaFile(request, response, filePath, {
-      contentType: video.type,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
+app.use("/api/videos", videoRouter);
 
 app.use(
   express.static(distDirectory, {
@@ -3119,7 +2763,11 @@ app.get("/{*route}", async (request, response, next) => {
   }
 });
 
-app.use((error, _request, response, _next) => {
+app.use((error, _request, response, next) => {
+  if (response.headersSent) {
+    next(error);
+    return;
+  }
   console.error(error);
   response
     .status(error.code === "PROJECT_BUSY" ? 409 : 400)

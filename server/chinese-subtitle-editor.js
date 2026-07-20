@@ -81,10 +81,10 @@ export async function saveChineseSubtitleFile(filePath, requestedCues) {
   if (!Array.isArray(requestedCues)) {
     throw new Error("缺少字幕编辑内容。");
   }
-  const canonical = parseChineseSubtitleDocument(await fs.readFile(filePath, "utf8"));
-  if (requestedCues.length < canonical.length) {
-    throw new Error(`字幕条目数量不一致：应为 ${canonical.length} 条。`);
+  if (requestedCues.length === 0) {
+    throw new Error("最终中文字幕至少需要保留一条字幕。");
   }
+  const canonical = parseChineseSubtitleDocument(await fs.readFile(filePath, "utf8"));
   const updated = requestedCues.map((cue, index) => {
     const expectedNumber = index + 1;
     const text = typeof cue?.text === "string" ? cue.text.trim() : "";

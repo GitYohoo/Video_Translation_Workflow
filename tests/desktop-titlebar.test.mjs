@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
 import test from "node:test";
 
-const styles = await fs.readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+import { readStyleSource } from "./style-source.mjs";
+
+const styles = await readStyleSource();
 const desktopVisualSystemStart = styles.indexOf("/* Desktop application visual system */");
 const desktopTitlebarStart = styles.indexOf(".desktop-titlebar {", desktopVisualSystemStart);
 const titlebarStyles = styles.slice(

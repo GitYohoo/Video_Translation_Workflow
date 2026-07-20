@@ -95,14 +95,42 @@ test("allows empty edited text and keeps the cue readable", async () => {
   assert.equal(result.cues[1].text, "第二条");
 });
 
-test("rejects missing edited cues", async () => {
+test("saves a deleted Chinese subtitle cue and renumbers the remaining cues", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "chinese-editor-"));
+  const filePath = path.join(directory, "示例_最终中文字幕.srt");
+  await fs.writeFile(filePath, sample, "utf8");
+
+  await saveChineseSubtitleFile(filePath, [
+    {
+      number: 1,
+      start: "00:00:03,000",
+      end: "00:00:04,000",
+      speaker: "",
+      text: "第二条",
+    },
+  ]);
+
+  const result = await readChineseSubtitleFile(filePath);
+  assert.equal(result.cues.length, 1);
+  assert.deepEqual(result.cues[0], {
+    number: 1,
+    start: "00:00:03,000",
+    end: "00:00:04,000",
+    startMs: 3000,
+    endMs: 4000,
+    speaker: "",
+    text: "第二条",
+  });
+});
+
+test("rejects deleting every Chinese subtitle cue", async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "chinese-editor-"));
   const filePath = path.join(directory, "示例_最终中文字幕.srt");
   await fs.writeFile(filePath, sample, "utf8");
 
   await assert.rejects(
-    () => saveChineseSubtitleFile(filePath, [{ number: 1, text: "只提交一条" }]),
-    /字幕条目数量不一致/,
+    () => saveChineseSubtitleFile(filePath, []),
+    /至少需要保留一条字幕/,
   );
 });
 

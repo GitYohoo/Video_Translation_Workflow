@@ -2,12 +2,65 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
 
-const source = await fs.readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
-const styles = await fs.readFile(new URL("../src/styles.css", import.meta.url), "utf8");
+import { readStyleSource } from "./style-source.mjs";
+
+const entrySource = await fs.readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
+const simplifiedPageSource = await fs.readFile(
+  new URL("../src/pages/simplified-video-page.jsx", import.meta.url),
+  "utf8",
+);
+const productionPageSource = await fs.readFile(
+  new URL("../src/pages/video-page.jsx", import.meta.url),
+  "utf8",
+);
+const videoProjectHeaderSource = await fs.readFile(
+  new URL("../src/components/video-project-header.jsx", import.meta.url),
+  "utf8",
+);
+const assetStagesSource = await fs.readFile(
+  new URL("../src/components/asset-stages-panel.jsx", import.meta.url),
+  "utf8",
+);
+const translationStageSource = await fs.readFile(
+  new URL("../src/components/translation-stage-panel.jsx", import.meta.url),
+  "utf8",
+);
+const englishDubbingStageSource = await fs.readFile(
+  new URL("../src/components/english-dubbing-stage-panel.jsx", import.meta.url),
+  "utf8",
+);
+const finalVideoStageSource = await fs.readFile(
+  new URL("../src/components/final-video-stage-panel.jsx", import.meta.url),
+  "utf8",
+);
+const finalValidationStageSource = await fs.readFile(
+  new URL("../src/components/final-validation-stage-panel.jsx", import.meta.url),
+  "utf8",
+);
+const source = [
+  entrySource,
+  simplifiedPageSource,
+  productionPageSource,
+  videoProjectHeaderSource,
+  assetStagesSource,
+  translationStageSource,
+  englishDubbingStageSource,
+  finalVideoStageSource,
+  finalValidationStageSource,
+].join("\n");
+const styles = await readStyleSource();
 const serverSource = await fs.readFile(new URL("../server/index.js", import.meta.url), "utf8");
-const simplifiedPageSource = source.slice(
-  source.indexOf("function SimplifiedVideoPage"),
-  source.indexOf("function VideoPage"),
+const appShellSource = await fs.readFile(
+  new URL("../src/components/app-shell.jsx", import.meta.url),
+  "utf8",
+);
+const dubbingEditorSource = await fs.readFile(
+  new URL("../src/components/dubbing-segment-editor-panel.jsx", import.meta.url),
+  "utf8",
+);
+const dubbingUtilsSource = await fs.readFile(
+  new URL("../src/dubbing-utils.js", import.meta.url),
+  "utf8",
 );
 const generatePanelSource = simplifiedPageSource.slice(
   simplifiedPageSource.indexOf('selectedPanel === "generateChinese"'),
@@ -17,25 +70,10 @@ const reviewChinesePanelSource = simplifiedPageSource.slice(
   simplifiedPageSource.indexOf('selectedPanel === "reviewChinese"'),
   simplifiedPageSource.indexOf("selectedPanel && !"),
 );
-const productionPageSource = source.slice(
-  source.indexOf("function VideoPage"),
-  source.indexOf("function App"),
-);
-const translationPanelSource = productionPageSource.slice(
-  productionPageSource.indexOf('visiblePanel === "translation"'),
-  productionPageSource.indexOf('visiblePanel === "englishDubbing"'),
-);
-const dubbingPanelSource = productionPageSource.slice(
-  productionPageSource.indexOf('visiblePanel === "englishDubbing"'),
-  productionPageSource.indexOf('visiblePanel === "finalVideo"'),
-);
-const finalVideoPanelSource = productionPageSource.slice(
-  productionPageSource.indexOf('visiblePanel === "finalVideo"'),
-  productionPageSource.indexOf('visiblePanel === "finalValidation"'),
-);
-const finalValidationPanelSource = productionPageSource.slice(
-  productionPageSource.indexOf('visiblePanel === "finalValidation"'),
-);
+const translationPanelSource = translationStageSource;
+const dubbingPanelSource = englishDubbingStageSource;
+const finalVideoPanelSource = finalVideoStageSource;
+const finalValidationPanelSource = finalValidationStageSource;
 
 test("renders the source video and Chinese subtitle editor on the result page", () => {
   assert.match(source, /src=\{`\/api\/videos\/\$\{record\.id\}\/content`\}/);
@@ -57,7 +95,7 @@ test("lets final Chinese subtitle speakers be applied to matching original speak
 test("requires an explicit user click before starting the automatic workflow", () => {
   assert.match(source, /开始生成中文字幕/);
   assert.match(source, /setWorkflowStarted\(true\)/);
-  assert.match(source, /started: workflowStarted/);
+  assert.match(source, /started: effectiveWorkflowStarted/);
 });
 
 test("keeps the video detail route on the simplified complete workflow", () => {
@@ -90,10 +128,10 @@ test("loads downstream production status into the simplified progress overview",
     simplifiedPageSource.indexOf("const simplifiedOverview = buildSimplifiedWorkflowOverview"),
     simplifiedPageSource.indexOf("const selectedOverviewStep"),
   );
-  assert.match(simplifiedPageSource, /workflow\/subtitle-editor/);
-  assert.match(simplifiedPageSource, /workflow\/english-dubbing-mix/);
-  assert.match(simplifiedPageSource, /workflow\/final-video/);
-  assert.match(simplifiedPageSource, /workflow\/final-validation/);
+  assert.match(simplifiedPageSource, /useWorkflowStatus\(record\?\.id, "subtitle-editor"\)/);
+  assert.match(simplifiedPageSource, /useWorkflowStatus\(record\?\.id, "english-dubbing-mix"\)/);
+  assert.match(simplifiedPageSource, /useWorkflowStatus\(record\?\.id, "final-video"\)/);
+  assert.match(simplifiedPageSource, /useWorkflowStatus\(record\?\.id, "final-validation"\)/);
   assert.match(overviewInput, /subtitleEditorComplete:\s*translationStatus\?\.complete/);
   assert.match(overviewInput, /englishDubbing:\s*downstreamEnglishDubbing/);
   assert.match(overviewInput, /finalVideo:\s*downstreamFinalVideo/);
@@ -111,10 +149,10 @@ test("uses one compact generation card and allows regenerating the final subtitl
 });
 
 test("describes how to start and continue projects on the welcome page", () => {
-  assert.match(source, /选择视频后点击开始，系统将自动提取、识别并合并最终中文字幕/);
-  assert.match(source, /<h1>从原视频开始制作<\/h1>/);
-  assert.match(source, /\{isAddingVideo \? "正在添加\.\.\." : "选择原视频"\}/);
-  assert.match(source, /<h2 id="recent-projects-title">继续制作<\/h2>/);
+  assert.match(appShellSource, /选择视频后点击开始，系统将自动提取、识别并合并最终中文字幕/);
+  assert.match(appShellSource, /<h1>从原视频开始制作<\/h1>/);
+  assert.match(appShellSource, /\{isAddingVideo \? "正在添加\.\.\." : "选择原视频"\}/);
+  assert.match(appShellSource, /<h2 id="recent-projects-title">继续制作<\/h2>/);
 });
 
 test("disables source replacement while a project workflow is running", () => {
@@ -123,7 +161,7 @@ test("disables source replacement while a project workflow is running", () => {
     /disabled=\{isReplacingSource \|\| projectWorkflowRunning\}/,
   );
   assert.match(
-    productionPageSource,
+    videoProjectHeaderSource,
     /disabled=\{isReplacingSource \|\| projectWorkflowRunning\}/,
   );
   assert.match(source, /请先等待当前任务完成或取消任务/);
@@ -165,6 +203,15 @@ test("shows insert subtitle controls in both Chinese and bilingual editors", () 
   assert.match(styles, /\.subtitle-insert-button/);
 });
 
+test("allows deleting each final Chinese subtitle while keeping one cue", () => {
+  assert.match(reviewChinesePanelSource, /deleteChineseCue/);
+  assert.match(reviewChinesePanelSource, /aria-label=\{`删除第 \$\{cue\.number\} 条中文字幕`\}/);
+  assert.match(reviewChinesePanelSource, /删除当前字幕/);
+  assert.match(reviewChinesePanelSource, /disabled=\{editorCues\.length <= 1\}/);
+  assert.match(source, /withRenumberedCues\(current\.filter\(\(cue\) => cue\.number !== number\)\)/);
+  assert.match(styles, /\.cue-delete-button/);
+});
+
 test("removes non-actionable translation and final-video ready hints", () => {
   assert.doesNotMatch(translationPanelSource, /可以翻译与校对/);
   assert.doesNotMatch(translationPanelSource, /subtitle-editor-summary/);
@@ -185,7 +232,7 @@ test("moves completed video playback from export into final validation", () => {
     finalValidationPanelSource,
     /workflow\/final-validation\/content/,
   );
-  assert.match(serverSource, /app\.get\("\/api\/videos\/:id\/workflow\/final-video\/content"/);
+  assert.match(serverSource, /videoRouter\.get\("\/:id\/workflow\/final-video\/content"/);
 });
 
 test("removes single-item redubbing and adds two final validation range actions", () => {
@@ -199,29 +246,29 @@ test("removes single-item redubbing and adds two final validation range actions"
 
 test("adds per-segment dubbing audition, detail editing, and regenerate actions to step four", () => {
   assert.match(dubbingPanelSource, /<DubbingSegmentEditorPanel/);
-  assert.match(source, /配音条目/);
-  assert.match(source, /配音详情/);
-  assert.match(source, /参考音频/);
-  assert.match(source, /重新配音该条并合成整轨/);
+  assert.match(dubbingEditorSource, /配音条目/);
+  assert.match(dubbingEditorSource, /配音详情/);
+  assert.match(dubbingEditorSource, /参考音频/);
+  assert.match(dubbingEditorSource, /重新配音该条并合成整轨/);
   assert.match(
     source,
     /workflow\/english-dubbing-mix\/segments\/\$\{selectedDubbingSegmentNumber\}\/regenerate/,
   );
   assert.match(
     serverSource,
-    /app\.put\("\/api\/videos\/:id\/workflow\/english-dubbing-mix\/segments\/:segmentNumber\/regenerate"/,
+    /videoRouter\.put\("\/:id\/workflow\/english-dubbing-mix\/segments\/:segmentNumber\/regenerate"/,
   );
   assert.match(
     serverSource,
-    /app\.get\("\/api\/videos\/:id\/workflow\/english-dubbing-mix\/segments\/:segmentNumber\/audio"/,
+    /videoRouter\.get\("\/:id\/workflow\/english-dubbing-mix\/segments\/:segmentNumber\/audio"/,
   );
 });
 
 test("uses subtle speaker tones and file picker for dubbing reference audio", () => {
-  assert.match(source, /speakerToneClass/);
-  assert.match(source, /更改参考音频/);
+  assert.match(dubbingUtilsSource, /speakerToneClass/);
+  assert.match(dubbingEditorSource, /更改参考音频/);
   assert.match(dubbingPanelSource, /onChooseReferenceAudio/);
-  assert.doesNotMatch(source, /value=\{draft\.referenceAudioPath\}/);
+  assert.doesNotMatch(dubbingEditorSource, /value=\{draft\.referenceAudioPath\}/);
   assert.match(source, /reference-audio\/select/);
   assert.match(serverSource, /selectAudioPath/);
   assert.match(styles, /speaker-tone-0/);

@@ -137,10 +137,9 @@ test("all cleanup removes every generated artifact but keeps the source out of s
 });
 
 test("the simplified page exposes one delete action for the selected stage", async () => {
-  const source = await fs.readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
-  const simplifiedPage = source.slice(
-    source.indexOf("function SimplifiedVideoPage"),
-    source.indexOf("function VideoPage"),
+  const simplifiedPage = await fs.readFile(
+    new URL("../src/pages/simplified-video-page.jsx", import.meta.url),
+    "utf8",
   );
   assert.match(simplifiedPage, /删除当前步骤产物/);
   assert.match(simplifiedPage, /workflow\/stages\/\$\{stageId\}/);
@@ -148,10 +147,9 @@ test("the simplified page exposes one delete action for the selected stage", asy
 });
 
 test("the simplified page exposes a separate delete-all-artifacts action", async () => {
-  const source = await fs.readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
-  const simplifiedPage = source.slice(
-    source.indexOf("function SimplifiedVideoPage"),
-    source.indexOf("function VideoPage"),
+  const simplifiedPage = await fs.readFile(
+    new URL("../src/pages/simplified-video-page.jsx", import.meta.url),
+    "utf8",
   );
   assert.match(simplifiedPage, /删除全部产物/);
   assert.match(simplifiedPage, /deleteAllArtifacts/);
@@ -160,7 +158,7 @@ test("the simplified page exposes a separate delete-all-artifacts action", async
 
 test("the server exposes stage cleanup and blocks deletion while affected work is running", async () => {
   const source = await fs.readFile(new URL("../server/index.js", import.meta.url), "utf8");
-  assert.match(source, /app\.delete\("\/api\/videos\/:id\/workflow\/stages\/:stageId"/);
+  assert.match(source, /videoRouter\.delete\("\/:id\/workflow\/stages\/:stageId"/);
   assert.match(source, /该步骤或后续步骤仍在运行/);
   assert.match(source, /cleanupStageArtifacts/);
 });

@@ -3,56 +3,35 @@ import express from "express";
 export function createJobRouter({ findVideoById, jobController }) {
   const router = express.Router();
 
-  async function requestVideo(request, response) {
-    const video = await findVideoById(request.params.id);
+  router.param("id", async (request, response, next, id) => {
+    const video = await findVideoById(id);
     if (!video) {
       response.sendStatus(404);
-      return null;
+      return;
     }
-    return video;
-  }
-
-  router.get("/api/videos/:id/jobs", async (request, response, next) => {
-    try {
-      const video = await requestVideo(request, response);
-      if (!video) {
-        return;
-      }
-      response.json(await jobController.list(video.id));
-    } catch (error) {
-      next(error);
-    }
+    response.locals.video = video;
+    next();
   });
 
-  router.get("/api/videos/:id/jobs/:workflow", async (request, response, next) => {
-    try {
-      const video = await requestVideo(request, response);
-      if (!video) {
-        return;
-      }
-      const job = await jobController.get(video.id, request.params.workflow);
-      if (!job) {
-        response.sendStatus(404);
-        return;
-      }
-      response.json(job);
-    } catch (error) {
-      next(error);
+  router.get("/api/videos/:id/jobs", async (_request, response) => {
+    response.json(await jobController.list(response.locals.video.id));
+  });
+
+  router.get("/api/videos/:id/jobs/:workflow", async (request, response) => {
+    const job = await jobController.get(response.locals.video.id, request.params.workflow);
+    if (!job) {
+      response.sendStatus(404);
+      return;
     }
+    response.json(job);
   });
 
   router.post(
     "/api/videos/:id/jobs/:workflow/cancel",
-    async (request, response, next) => {
-      try {
-        const video = await requestVideo(request, response);
-        if (!video) {
-          return;
-        }
-        response.json(await jobController.cancel(video.id, request.params.workflow));
-      } catch (error) {
-        next(error);
-      }
+    async (request, response) => {
+      response.json(
+        await jobController.cancel(response.locals.video.id, request.params.workflow),
+      );
     },
   );
 

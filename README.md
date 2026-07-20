@@ -1,7 +1,7 @@
 # Video Translation Workshop
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-0.2.37-blue.svg?style=flat-square" alt="Version 0.2.37">
+  <img src="https://img.shields.io/badge/Version-0.2.41-blue.svg?style=flat-square" alt="Version 0.2.41">
   <img src="https://img.shields.io/badge/Platform-Windows-0078d4.svg?style=flat-square" alt="Windows">
   <img src="https://img.shields.io/badge/License-Non--Commercial-orange.svg?style=flat-square" alt="Non-commercial research and learning license">
   <img src="https://img.shields.io/badge/Electron-42.4.0-purple.svg?style=flat-square" alt="Electron 42.4.0">

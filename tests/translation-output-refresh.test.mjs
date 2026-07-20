@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
 
-const mainSource = await fs.readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
+const controllerSource = await fs.readFile(
+  new URL("../src/pages/video-page.jsx", import.meta.url),
+  "utf8",
+);
+const translationPanelSource = await fs.readFile(
+  new URL("../src/components/translation-stage-panel.jsx", import.meta.url),
+  "utf8",
+);
+const mainSource = [controllerSource, translationPanelSource].join("\n");
+const videoDataSource = await fs.readFile(
+  new URL("../src/use-video-data.js", import.meta.url),
+  "utf8",
+);
+const serverSource = await fs.readFile(new URL("../server/index.js", import.meta.url), "utf8");
 const punctuationSource = await fs.readFile(
   new URL("../scripts/restore_ocr_punctuation.py", import.meta.url),
   "utf8",
@@ -17,8 +30,27 @@ test("keeps Gemini import available when cached readiness is stale", () => {
 });
 
 test("refreshes externally generated translation output while idle and on focus", () => {
-  assert.match(mainSource, /window\.addEventListener\("focus", refreshFinalSubtitlesStatus\)/);
-  assert.match(mainSource, /finalSubtitles\?\.status === "running" \? 1500 : 4000/);
+  assert.match(videoDataSource, /useSWR\(requestKey, requestJson/);
+  assert.match(videoDataSource, /revalidateOnFocus/);
+  assert.match(videoDataSource, /refreshWhenIdle \? IDLE_REFRESH_INTERVAL : 0/);
+  assert.doesNotMatch(mainSource, /window\.addEventListener\("focus"/);
+  assert.doesNotMatch(mainSource, /setInterval\(/);
+});
+
+test("accepts revalidated subtitle data until the local editor becomes dirty", () => {
+  assert.match(mainSource, /revision: subtitleEditorRevision/);
+  assert.match(mainSource, /revalidateOnMount: true/);
+  assert.match(mainSource, /subtitleEditorResource\.isValidating/);
+  assert.match(mainSource, /subtitleEditorResource\.error/);
+  assert.match(mainSource, /subtitleEditorCues !== subtitleEditorOriginalCues/);
+  assert.match(mainSource, /\|\| subtitleEditorDirty/);
+  assert.doesNotMatch(mainSource, /subtitleEditorInitializationRef/);
+});
+
+test("binds the translation cache revision to the Chinese SRT file", () => {
+  assert.match(mainSource, /outputs\.srt\.revision/);
+  assert.match(serverSource, /revision: srtReady \? await fileRevision\(paths\.srtPath\) : null/);
+  assert.match(serverSource, /revision: await fileRevision\(paths\.srtPath\)/);
 });
 
 test("punctuation restoration only declares consumed outputs", () => {

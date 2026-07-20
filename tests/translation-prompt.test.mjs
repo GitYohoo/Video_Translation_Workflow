@@ -2,10 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
 
-const source = await fs.readFile(new URL("../src/main.jsx", import.meta.url), "utf8");
-const promptSource = source.slice(
-  source.indexOf("function buildTranslationPrompt"),
-  source.indexOf("function FileResult"),
+const promptSource = await fs.readFile(
+  new URL("../src/subtitle-editor-utils.js", import.meta.url),
+  "utf8",
 );
 
 test("asks Gemini to calculate and correct TTS speaking speed", () => {

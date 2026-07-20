@@ -2,7 +2,7 @@
   "name": "video-translation-workflow",
   "productName": "影译工坊",
   "private": true,
-  "version": "0.2.37",
+  "version": "0.2.41",
   "description": "Local-first Windows desktop workflow for Chinese-to-English video translation, subtitle review, AI dubbing, and final MP4 rendering",
   "license": "SEE LICENSE IN LICENSE",
   "keywords": [
@@ -45,7 +45,8 @@
     "lucide-react": "^1.17.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^6.30.4"
+    "react-router-dom": "^6.30.4",
+    "swr": "^2.4.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.5.2",
